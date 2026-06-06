@@ -2,7 +2,7 @@
 /**
  * Install Runtime Self-Learning as a community Hanako plugin.
  *
- * This copies the plugin into ~/.hanako/plugins/runtime-learner.
+ * This copies the plugin into ~/.hanako/plugins/hanako-runtime-learner.
  * It does not modify Hanako source files or app.asar.
  */
 

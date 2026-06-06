@@ -163,12 +163,12 @@ npm run install-plugin
 - **不会**修改 Hanako 源文件、设置或 `app.asar`
 - 学习到的提示作为技能文件中的提醒注入，而非硬约束——Agent 被指示优先遵循当前用户指令
 - 可随时禁用高置信度自动注入
-- 删除 `~/.hanako/plugins/runtime-learner/` 即可完全卸载；
+- 删除 `~/.hanako/plugins/hanako-runtime-learner/` 即可完全卸载；
   学习数据目录独立存放，可单独删除
 
 ## 卸载
 
-删除 `~/.hanako/plugins/runtime-learner/` 并重启 Hanako。
+删除 `~/.hanako/plugins/hanako-runtime-learner/` 并重启 Hanako。
 
 如需同时删除所有学习数据：
 
@@ -200,7 +200,7 @@ npm run check
 ### 项目结构
 
 ```
-runtime-learner/
+hanako-runtime-learner/
 ├── install.cjs          # 插件安装器（CommonJS）
 ├── package.json         # ESM 声明（零外部依赖）
 ├── manifest.json        # Hanako 插件清单

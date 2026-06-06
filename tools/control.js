@@ -30,7 +30,7 @@ function hanakoHome() {
 
 function paths(ctx) {
   const learnerDir = path.join(hanakoHome(), "self-learning");
-  const pluginDir = ctx?.pluginDir || path.join(hanakoHome(), "plugins", "runtime-learner");
+  const pluginDir = ctx?.pluginDir || path.join(hanakoHome(), "plugins", "hanako-runtime-learner");
   return {
     learnerDir,
     pluginDir,
