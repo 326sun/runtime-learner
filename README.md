@@ -1,46 +1,45 @@
 # Runtime Self-Learning
 
-A local, optional self-learning runtime for the [Hanako](https://github.com/liliMozi/openhanako) desktop app.
+[Hanako](https://github.com/liliMozi/openhanako) 桌面应用的本地自学习运行时。
 
-## What It Does
+## 功能
 
-This plugin adds a three-layer self-learning pipeline that runs entirely on your
-machine. It observes how you and Hanako work together, learns from repeated
-patterns and mistakes, and injects conservative skill hints to improve future
-sessions.
+此插件为 Hanako 增加一个完全运行在本地的三层自学习管道。
+它观察你与 Hanako 的协作方式，从重复模式与错误中学习，
+并注入保守的技能提示以改善后续会话。
 
-### Three Layers
+### 三层架构
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│ Layer 1: OBSERVE                                     │
-│ Listen to Hanako runtime events (tool calls, errors, │
-│ assistant completions, user corrections)             │
+│ 第一层：观察（OBSERVE）                               │
+│ 监听 Hanako 运行时事件（工具调用、错误、               │
+│ 助手完成、用户纠正）                                   │
 └────────────────────────┬────────────────────────────┘
                          │ turns.jsonl / error_log.jsonl
                          ▼
 ┌─────────────────────────────────────────────────────┐
-│ Layer 2: LEARN                                       │
-│ PatternDetector identifies:                          │
-│ • Repeated workflows (same tool sequence ≥3×)        │
-│ • Recurring errors (same failure mode ≥2×)           │
-│ • User corrections (explicit "no, do it this way")   │
+│ 第二层：学习（LEARN）                                  │
+│ PatternDetector 识别：                                │
+│ · 重复工作流（同一工具序列出现 ≥3 次）                   │
+│ · 重复错误（同一失败模式出现 ≥2 次）                     │
+│ · 用户纠正（明确的"不对，这样做"指令）                   │
 └────────────────────────┬────────────────────────────┘
                          │ patterns.json
                          ▼
 ┌─────────────────────────────────────────────────────┐
-│ Layer 3: INJECT                                      │
-│ High-confidence patterns → SKILL.md hints            │
-│ Configurable thresholds: score, count, half-life     │
-│ Manual review: approve / reject / rollback           │
+│ 第三层：注入（INJECT）                                 │
+│ 高置信度模式 → SKILL.md 提示                          │
+│ 可配置阈值：分数、次数、半衰期                          │
+│ 人工审核：批准 / 拒绝 / 回滚                            │
 └─────────────────────────────────────────────────────┘
 ```
 
-**This is a Phase 2 learner, not an uncontrolled self-modifying agent.**
-It only updates its own plugin skill file and local logs. Learned hints are
-treated as suggestions and never override the current user instruction.
+**这是一个第二阶段学习器，而非不受控的自修改 Agent。**
+它只更新自己的插件技能文件和本地日志。学习到的提示被视为建议，
+永远不会覆盖当前用户指令。
 
-## Install
+## 安装
 
 ```powershell
 git clone https://github.com/326sun/runtime-learner.git
@@ -48,141 +47,139 @@ cd runtime-learner
 npm run install-plugin
 ```
 
-Then restart Hanako and enable from **Settings → Plugins**:
+重启 Hanako，在 **设置 → 插件** 中：
 
-1. Toggle **Allow full-access plugins**
-2. Enable **Runtime Self-Learning**
+1. 打开 **允许全权限插件**
+2. 启用 **Runtime Self-Learning**
 
-The plugin requires zero external dependencies (Node.js built-in modules only).
+插件零外部依赖（仅使用 Node.js 内置模块）。
 
-## Tools
+## 工具
 
-| Tool | Description |
-|------|-------------|
-| `self_learning_stats` | View learning statistics: turns, patterns, injectable hints, review states |
-| `self_learning_report` | Generate a report for the last N days: task trends, error distribution, pending reviews |
-| `self_learning_control` | Approve/reject patterns, update injection config, regenerate skill, roll back |
+| 工具 | 说明 |
+|------|------|
+| `self_learning_stats` | 查看学习统计：轮次、模式数、可注入提示数、审核状态 |
+| `self_learning_report` | 生成最近 N 天的学习报告：任务趋势、错误分布、待审核项 |
+| `self_learning_control` | 批准/拒绝模式、更新注入配置、重新生成技能、回滚 |
 
-### Control Actions
+### 控制指令
 
-| Action | Description |
-|--------|-------------|
-| `status` | Show current config, pattern counts, snapshot history |
-| `list` | List top 20 patterns with scores and injectable status |
-| `approve` | Approve a pattern (forces injection) |
-| `reject` | Reject a pattern (permanently excluded) |
-| `set_config` | Update injection thresholds, decay rate, preference inclusion |
-| `regenerate_skill` | Force-regenerate the SKILL.md from current patterns |
-| `rollback` | Roll back SKILL.md to the latest snapshot |
+| 指令 | 说明 |
+|------|------|
+| `status` | 显示当前配置、模式数量、快照历史 |
+| `list` | 列出 Top 20 模式及其分数和可注入状态 |
+| `approve` | 批准一个模式（强制注入） |
+| `reject` | 拒绝一个模式（永久排除） |
+| `set_config` | 更新注入阈值、衰减速率、偏好纳入策略 |
+| `regenerate_skill` | 从当前模式强制重新生成 SKILL.md |
+| `rollback` | 将 SKILL.md 回滚到最近一次快照 |
 
-## Data
+## 数据
 
-All learning data stays local under `~/.hanako/self-learning/`:
+所有学习数据存储于 `~/.hanako/self-learning/`：
 
-| File | Content |
-|------|---------|
-| `turns.jsonl` | Compact runtime turn records |
-| `experience_log.jsonl` | Structured learning records with task classification |
-| `error_log.jsonl` | Tool and assistant error records with severity scoring |
-| `patterns.json` | Learned workflows, errors, and preferences with decayed scores |
-| `config.json` | Injection thresholds (score, count, half-life) and review settings |
-| `skill_history/` | Timestamped SKILL.md snapshots for rollback |
+| 文件 | 内容 |
+|------|------|
+| `turns.jsonl` | 紧凑的运行时轮次记录 |
+| `experience_log.jsonl` | 结构化学习记录，含任务分类 |
+| `error_log.jsonl` | 工具与助手错误记录，含严重度评分 |
+| `patterns.json` | 学习到的工作流、错误和偏好，含衰减分数 |
+| `config.json` | 注入阈值（分数、次数、半衰期）与审核设置 |
+| `skill_history/` | 带时间戳的 SKILL.md 快照，用于回滚 |
 
-No data leaves your machine. No telemetry. No cloud sync.
+数据不离开你的机器。无遥测。无云同步。
 
-## How Patterns Work
+## 模式工作机制
 
-Each detected pattern has a **score** that decays over time. The default half-life
-is 30 days — a pattern loses half its score every 30 days without recurrence.
+每个检测到的模式有一个随时间衰减的**分数**。默认半衰期为 30 天——
+一个模式每 30 天不复发，分数减半。
 
-A pattern becomes **injectable** when:
+模式在满足以下条件时变为**可注入**：
 
-- Score ≥ `minInjectScore` (default: 8)
-- Repeat count ≥ `minInjectCount` (default: 2)
-- Status is not `rejected`
+- 分数 ≥ `minInjectScore`（默认：8）
+- 重复次数 ≥ `minInjectCount`（默认：2）
+- 状态不为 `rejected`
 
-**Preference-type** patterns (user corrections like "do it this way") are
-injected immediately if `includePendingPreferences` is enabled (default: `true`).
+**偏好型**模式（用户纠正类，如"以后这样做"）在
+`includePendingPreferences` 启用时（默认启用）立即注入。
 
-You can change all thresholds via `self_learning_control` → `set_config`.
+所有阈值均可通过 `self_learning_control` → `set_config` 调整。
 
-## Safety Boundary
+## 安全边界
 
-- The plugin only writes to `~/.hanako/self-learning/` and its own
-  `skills/self-learning/SKILL.md`
-- It does **not** modify Hanako source files, settings, or `app.asar`
-- Learned hints are injected as reminders in the skill file, not as hard
-  constraints — the agent is instructed to prefer current user instructions
-- You can disable automatic high-confidence injection at any time
-- You can delete `~/.hanako/plugins/runtime-learner/` to fully uninstall;
-  the learning data directory is separate and can be deleted independently
+- 插件仅写入 `~/.hanako/self-learning/` 和自身的 `skills/self-learning/SKILL.md`
+- **不会**修改 Hanako 源文件、设置或 `app.asar`
+- 学习到的提示作为技能文件中的提醒注入，而非硬约束——Agent 被指示优先遵循当前用户指令
+- 可随时禁用高置信度自动注入
+- 删除 `~/.hanako/plugins/runtime-learner/` 即可完全卸载；
+  学习数据目录独立存放，可单独删除
 
-## Uninstall
+## 卸载
 
-Delete `~/.hanako/plugins/runtime-learner/` and restart Hanako.
+删除 `~/.hanako/plugins/runtime-learner/` 并重启 Hanako。
 
-To also remove all learning data:
+如需同时删除所有学习数据：
 
 ```powershell
 rm -r ~/.hanako/self-learning/
 ```
 
-## Contributing
+## 参与贡献
 
-This plugin is part of the [`hanako-supplement`](https://github.com/326sun/hanako-supplement)
-monorepo. Contributions are welcome:
+此插件属于 [`hanako-supplement`](https://github.com/326sun/hanako-supplement) 系列。
+欢迎提交贡献：
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feat/your-feature`)
-3. Commit your changes (`git commit -m 'feat: description'`)
-4. Push to the branch (`git push origin feat/your-feature`)
-5. Open a Pull Request
+1. Fork 本仓库
+2. 创建特性分支（`git checkout -b feat/你的特性`）
+3. 提交修改（`git commit -m 'feat: 简短描述'`）
+4. 推送到分支（`git push origin feat/你的特性`）
+5. 发起 Pull Request
 
-Before submitting, run:
+提交前请运行：
 
 ```powershell
 npm run check
 ```
 
-The plugin source is ESM (`.js` with `"type": "module"` in `package.json`).
-The install script uses CommonJS (`.cjs` extension).
+插件源码使用 ESM（`.js` 文件配合 `package.json` 中的 `"type": "module"`），
+安装脚本使用 CommonJS（`.cjs` 扩展名）。
 
-### Project Structure
+### 项目结构
 
 ```
 runtime-learner/
-├── install.cjs          # Plugin installer (CommonJS)
-├── package.json         # ESM declaration (zero external dependencies)
-├── manifest.json        # Hanako plugin manifest
-├── index.js             # Plugin entry point: EventBus subscription, PatternDetector, skill injection
+├── install.cjs          # 插件安装器（CommonJS）
+├── package.json         # ESM 声明（零外部依赖）
+├── manifest.json        # Hanako 插件清单
+├── index.js             # 插件入口：EventBus 订阅、PatternDetector、技能注入
 ├── lib/
-│   └── common.js        # Shared utilities: scoring, decay, injection logic
+│   └── common.js        # 共享工具函数：计分、衰减、注入逻辑
 ├── tools/
-│   ├── stats.js         # Agent tool: learning statistics
-│   ├── report.js        # Agent tool: N-day learning report
-│   └── control.js       # Agent tool: approve, reject, configure, rollback
+│   ├── stats.js         # Agent 工具：学习统计
+│   ├── report.js        # Agent 工具：N 日学习报告
+│   └── control.js       # Agent 工具：批准、拒绝、配置、回滚
 └── skills/
     └── self-learning/
-        └── SKILL.md     # Auto-generated skill hints (updated by the plugin at runtime)
+        └── SKILL.md     # 自动生成的技能提示（插件运行时更新）
 ```
 
-### Extending
+### 扩展开发
 
-To add new pattern types:
+新增模式类型：
 
-1. Define a new pattern category in `PatternDetector.ingest()` in `index.js`
-2. Add any new scoring logic to `lib/common.js`
-3. Update `buildSkillMd()` to format the new pattern type in the generated skill
-4. Update `self_learning_control` and `self_learning_report` if the new pattern
-   needs different review or reporting behavior
+1. 在 `index.js` 的 `PatternDetector.ingest()` 中定义新模式类别
+2. 在 `lib/common.js` 中添加新的计分逻辑
+3. 在 `buildSkillMd()` 中格式化新模式类型的输出
+4. 如新模式需要不同的审核或报告行为，更新 `self_learning_control` 和
+   `self_learning_report`
 
-To add new tools:
+新增工具：
 
-1. Create a new file in `tools/` with `export const name`, `description`,
-   `parameters`, and `async function execute()`
-2. Import shared utilities from `../lib/common.js`
-3. The Hanako agent automatically discovers tools from the `tools/` directory
+1. 在 `tools/` 下新建文件，导出 `name`、`description`、`parameters` 和
+   `async function execute()`
+2. 从 `../lib/common.js` 导入共享工具函数
+3. Hanako Agent 自动从 `tools/` 目录发现新工具
 
-## License
+## 许可证
 
 MIT
