@@ -1,0 +1,21 @@
+{
+  "name": "runtime-learner",
+  "version": "0.3.0",
+  "description": "Runtime self-learning engine for Hanako: observe local interaction patterns, learn repeated workflows and errors, inject conservative skill hints.",
+  "author": "Sun",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "install.cjs",
+    "manifest.json",
+    "index.js",
+    "lib/",
+    "tools/",
+    "skills/",
+    "README.md"
+  ],
+  "scripts": {
+    "install-plugin": "node install.cjs",
+    "check": "node --check install.cjs && node --check index.js && node --check lib/common.js && node --check tools/stats.js && node --check tools/report.js && node --check tools/control.js"
+  }
+}

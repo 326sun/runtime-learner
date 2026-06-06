@@ -1,0 +1,12 @@
+{
+  "id": "runtime-learner",
+  "name": "Runtime Self-Learning",
+  "version": "0.3.0",
+  "description": "Runtime self-learning engine: observe local interaction patterns, learn repeated workflows and errors, then inject conservative skill hints.",
+  "author": "Sun",
+  "trust": "full-access",
+  "minAppVersion": "0.293.0",
+  "capabilities": {
+    "chat": true
+  }
+}
