@@ -320,6 +320,24 @@ function pruneDataFiles() {
     if (!Array.isArray(all)) return;
     const config = readJson(CONFIG_FILE, DEFAULT_CONFIG);
     const strengthThreshold = 1.5; // Below this and not approved → forget
+
+    // Downgrade stale auto-approved preference patterns: they must earn
+    // permanence through search hits or adoption. Without interaction,
+    // they fall back to the forgetting curve.
+    const now = Date.now();
+    const PREFERENCE_STALE_MS = 7 * 86_400_000; // 7 days
+    for (const p of all) {
+      if (p.type !== "preference" || p.status !== "approved") continue;
+      const lastInteraction = Math.max(
+        p.lastSearchedAt ? new Date(p.lastSearchedAt).getTime() : 0,
+        p.lastAdoptedAt ? new Date(p.lastAdoptedAt).getTime() : 0
+      );
+      if (now - lastInteraction > PREFERENCE_STALE_MS) {
+        p.status = "pending";
+        p.reviewedAt = null;
+      }
+    }
+
     all = all.filter(p => {
       if (p.status === "approved") return true; // Permanent
       if (p.type === "capability" || p.type === "host_capability") return false;
@@ -986,7 +1004,11 @@ export default definePlugin({
       const allPatterns = detector.all();
       let count = 0;
       for (const p of allPatterns) {
-        if (p.status === "pending" && p.injectable) {
+        // Preference patterns (user corrections, transient feedback) are
+        // NOT auto-approved — they must earn permanence through manual
+        // approval or repeated search/adoption. The forgetting curve
+        // naturally prunes obsolete bug-fix corrections.
+        if (p.status === "pending" && p.injectable && p.type !== "preference") {
           const stored = detector.patterns.get(p.id);
           if (stored && stored.status === "pending") {
             stored.status = "approved";
