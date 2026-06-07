@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0
+
+- 官方记忆桥接（official-memory-bridge）：只读接入 Hanako 官方记忆，搜索时自动纳入
+- 改进提案引擎（proposals）：基于模式分析自动生成改进提案，支持审核与应用
+- 工具层增强：control 提案管理、search 多路加权检索升级、stats/report/activity 功能完善
+- README 重写，项目结构说明更新
+- 新增 official-memory-bridge 和 proposals 测试覆盖
+
 ## 0.6.1
 
 - 修复 `PatternDetector.restore` 与 `ingest` 中 seqCache key 不一致（Unicode `→` vs ASCII `->`），恢复的旧 workflow 不再丢失计数
