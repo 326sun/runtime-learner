@@ -324,32 +324,32 @@ function pruneDataFiles() {
     // Downgrade stale auto-approved preference patterns: they must earn
     // permanence through search hits or adoption. Without interaction,
     // they fall back to the forgetting curve.
-    const now = Date.now();
-    const PREFERENCE_STALE_MS = 7 * 86_400_000; // 7 days
-    for (const p of all) {
-      if (p.type !== "preference" || p.status !== "approved") continue;
-      const lastInteraction = Math.max(
-        p.lastSearchedAt ? new Date(p.lastSearchedAt).getTime() : 0,
-        p.lastAdoptedAt ? new Date(p.lastAdoptedAt).getTime() : 0
-      );
-      if (now - lastInteraction > PREFERENCE_STALE_MS) {
-        p.status = "pending";
-        p.reviewedAt = null;
-      }
+    // ── Preferences: archival tier, not subject to forgetting curve ──
+    // Kept permanently but capped by count (latest wins).
+    const MAX_PREFERENCES = 20;
+    const prefs = all.filter(p => p.type === "preference");
+    const nonPrefs = all.filter(p => p.type !== "preference");
+    if (prefs.length > MAX_PREFERENCES) {
+      prefs.sort((a, b) => (b.firstSeen || b.date || "").localeCompare(a.firstSeen || a.date || ""));
+      prefs.splice(MAX_PREFERENCES);
     }
 
-    all = all.filter(p => {
-      if (p.status === "approved") return true; // Permanent
+    // ── Core patterns: forgetting-curve based retention ──
+    let core = nonPrefs.filter(p => {
+      if (p.status === "approved") return true;
       if (p.type === "capability" || p.type === "host_capability") return false;
       if (p.id?.startsWith("usage_large")) return false;
       const ms = memoryStrength(p, config);
       return ms >= strengthThreshold;
     });
+
     // Cap total count: keep top N by memory strength
-    if (all.length > MAX_PATTERN_COUNT) {
-      all.sort((a, b) => (memoryStrength(b, config) || 0) - (memoryStrength(a, config) || 0));
-      all = all.slice(0, MAX_PATTERN_COUNT);
+    if (core.length > MAX_PATTERN_COUNT) {
+      core.sort((a, b) => (memoryStrength(b, config) || 0) - (memoryStrength(a, config) || 0));
+      core = core.slice(0, MAX_PATTERN_COUNT);
     }
+
+    all = [...core, ...prefs];
     fs.writeFileSync(PATTERNS_FILE, JSON.stringify(all, null, 2), "utf-8");
   } catch {}
 }
