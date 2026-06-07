@@ -33,17 +33,26 @@ function contextScore(pattern, tokens) {
 }
 
 function relationBoost(pattern, allPatterns) {
-  if (!pattern.context?.categories) return 0;
-  // Boost patterns that share categories with other high-score patterns
-  const cats = new Set(pattern.context.categories || []);
+  // Use explicit relation edges from the knowledge tree
+  const rels = pattern.context?.relations || [];
   let boost = 0;
-  for (const other of allPatterns) {
-    if (other.id === pattern.id) continue;
-    const otherCats = new Set(other.context?.categories || []);
-    const overlap = [...cats].filter(c => otherCats.has(c)).length;
-    if (overlap > 0) boost += overlap * 0.3 * Math.min(1, (other.score || 0) / 15);
+  for (const rel of rels) {
+    const target = allPatterns.find(p => p.id === rel.targetId);
+    if (target && target.status !== "rejected") {
+      boost += (rel.weight || 0.2) * Math.min(1, (target.score || 0) / 15);
+    }
   }
-  return Math.min(boost, 3); // Cap at 3
+  // Also boost from simple category overlap as a baseline
+  if (pattern.context?.categories) {
+    const cats = new Set(pattern.context.categories);
+    for (const other of allPatterns) {
+      if (other.id === pattern.id) continue;
+      const otherCats = new Set(other.context?.categories || []);
+      const overlap = [...cats].filter(c => otherCats.has(c)).length;
+      if (overlap > 0) boost += overlap * 0.2 * Math.min(1, (other.score || 0) / 15);
+    }
+  }
+  return Math.min(boost, 5);
 }
 
 const tool = defineTool({
@@ -95,6 +104,7 @@ const tool = defineTool({
       .sort((a, b) => b._score - a._score)
       .slice(0, limit)
       .map(p => ({
+        id: p.id,
         type: p.type,
         desc: p.desc,
         fix: p.fix || null,

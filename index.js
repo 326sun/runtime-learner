@@ -481,7 +481,55 @@ class PatternDetector {
       }
     }
 
+    // Build knowledge-tree relations for newly created/updated patterns
+    this._linkRelations(exp);
+
     return newPatterns;
+  }
+
+  _linkRelations(exp) {
+    const activeCats = [...new Set((exp.toolsUsed || []).map(t => toolCategory(normalizeToolName(t))))];
+    const activeTask = exp.taskType || "general";
+    if (activeCats.length < 2 && activeTask === "general") return;
+
+    // Find the IDs of patterns that were just created or updated in this ingest call
+    const targets = [];
+    if (activeCats.length >= 2) {
+      const catKey = activeCats.join("→");
+      targets.push(`workflow:${catKey}`);
+    }
+    if (exp.correction) {
+      targets.push(`pref:${exp.correction.slice(0, 80)}`);
+    }
+
+    for (const targetId of targets) {
+      const target = this.patterns.get(targetId);
+      if (!target) continue;
+      target.context = target.context || {};
+      const rels = target.context.relations || [];
+
+      for (const [id, stored] of this.patterns) {
+        if (id === targetId) continue;
+        if (stored.type === "capability" || stored.type === "host_capability") continue;
+
+        const storedCats = new Set(stored.context?.categories || []);
+        const catOverlap = activeCats.filter(c => storedCats.has(c)).length;
+        const taskMatch = activeTask !== "general" && (stored.context?.taskType || "general") === activeTask;
+
+        let type = null, weight = 0;
+        if (catOverlap >= 2) { type = "shared-tools"; weight = catOverlap * 0.5; }
+        else if (taskMatch) { type = "same-task"; weight = 0.3; }
+        else if (catOverlap >= 1 && exp.correction) { type = "co-occurred"; weight = 0.2; }
+        if (!type) continue;
+
+        const exists = rels.find(r => r.targetId === id);
+        if (exists) { exists.weight = Math.max(exists.weight, weight); }
+        else { rels.push({ targetId: id, type, weight }); }
+      }
+
+      if (rels.length > 8) rels.splice(0, rels.length - 8);
+      target.context.relations = rels;
+    }
   }
 
   ingestError(err) {
@@ -991,7 +1039,67 @@ export default definePlugin({
 
         if (event.type === "tool_execution_end") {
           turn.markToolEnd(event.toolName || event.name);
-          if (event.isError) turn.addError(extractToolError(event));
+          if (event.isError) { turn.addError(extractToolError(event)); return; }
+
+          // ── 3-way integration ──
+
+          // 1. Feed official pin_memory into self-learning patterns
+          const toolName = normalizeToolName(event.toolName || event.name);
+          if (toolName === "pin_memory") {
+            try {
+              const args = event.args || event.input || {};
+              const content = typeof args.content === "string" ? args.content : JSON.stringify(args);
+              if (content && content.length < 500) {
+                const pexp = {
+                  date: new Date().toISOString(),
+                  taskType: "general",
+                  toolsUsed: ["pin_memory"],
+                  toolCallCount: 1,
+                  correction: content,
+                  resultStatus: "success",
+                  stopReason: null,
+                  errors: [],
+                };
+                detector.ingest(pexp);
+                persistPatterns();
+                refreshSkill();
+                ctx.log.info(`runtime-learner: ingested pin_memory as preference pattern`);
+              }
+            } catch (err) {
+              ctx.log.warn(`runtime-learner: pin_memory ingestion skipped: ${err.message}`);
+            }
+            return;
+          }
+
+          // 2. Feedback loop: boost patterns returned by self_learning_search
+          if (toolName === "self_learning_search") {
+            try {
+              const raw = event.result;
+              if (typeof raw === "string") {
+                const parsed = JSON.parse(raw);
+                const ids = (parsed.results || []).map(r => r.id).filter(Boolean);
+                if (ids.length > 0) {
+                  let boosted = 0;
+                  for (const id of ids) {
+                    const stored = detector.patterns.get(id);
+                    if (stored) {
+                      stored.score = (stored.score || 0) + 1;
+                      stored.lastSearchedAt = new Date().toISOString();
+                      boosted += 1;
+                    }
+                  }
+                  if (boosted > 0) {
+                    persistPatterns();
+                    ctx.log.info(`runtime-learner: feedback boosted ${boosted} pattern(s)`);
+                  }
+                }
+              }
+            } catch (err) {
+              ctx.log.warn(`runtime-learner: feedback loop skipped: ${err.message}`);
+            }
+            return;
+          }
+
           return;
         }
 
