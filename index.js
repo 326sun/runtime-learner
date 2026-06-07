@@ -32,6 +32,7 @@ const MAX_SKILL_HISTORY = 20;
 const MAX_ACTIVITY_ENTRIES = 500;
 const LOG_RETENTION_DAYS = 30;
 const MAX_PATTERN_COUNT = 50;
+const MAX_LOG_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB — skip prune for small files
 
 const runtimeState = {
   detector: null,
@@ -43,6 +44,7 @@ const runtimeState = {
   advisorSkipReasons: new Map(),
   sessionStart: null,
   sessionActivityCount: 0,
+  pendingAdoptionChecks: new Map(), // sessionPath → { searches: [{patternId, tools}], remaining: 3 }
 };
 
 const TOOL_SHORT = {
@@ -105,7 +107,7 @@ const ERR_PATTERNS = {
 };
 
 const CORRECTION_PATTERNS = [
-  /(?:不对|错了|不是|应该|以后|下次|记住|按我说的|不要这样|别这样|改成|纠正)/i,
+  /(?:不对|错了|不应该|不要这样|别这样|改成|纠正|按我说的|应该|以后|下次|记住)/i,
   /(?:wrong|incorrect|actually|remember|next time|do not|don't|should have)/i,
 ];
 
@@ -265,7 +267,12 @@ function pruneActivityLog() {
   } catch {}
 }
 
+// Prune log files on a 5-minute interval, not on every flush
+let lastPruneTs = 0;
 function pruneDataFiles() {
+  const now = Date.now();
+  if (now - lastPruneTs < 300_000) return;
+  lastPruneTs = now;
   const cutoff = Date.now() - LOG_RETENTION_DAYS * 86_400_000;
 
   // Prune JSONL files: drop lines older than retention window
@@ -273,12 +280,14 @@ function pruneDataFiles() {
   for (const file of logFiles) {
     try {
       if (!fs.existsSync(file)) continue;
+      // Skip small files: prune only when > 10 MB to avoid unnecessary IO
+      if (fs.statSync(file).size <= MAX_LOG_SIZE_BYTES) continue;
       const lines = fs.readFileSync(file, "utf-8").trim().split("\n").filter(Boolean);
       const kept = [];
       for (const line of lines) {
         try {
           const row = JSON.parse(line);
-          if (new Date(row.date).getTime() >= cutoff) kept.push(line);
+          if (!row.date || new Date(row.date).getTime() >= cutoff) kept.push(line);
         } catch { kept.push(line); } // Keep unparseable lines
       }
       if (kept.length < lines.length) {
@@ -391,6 +400,7 @@ class PatternDetector {
     this.config = config;
     this.patterns = new Map();
     this.seqCache = new Map();
+    this.seqInsertOrder = [];
     this.turnCount = 0;
   }
 
@@ -403,8 +413,18 @@ class PatternDetector {
       if (!pattern?.id) continue;
       this.patterns.set(pattern.id, pattern);
       if (pattern.type === "workflow" && Array.isArray(pattern.tools)) {
-        this.seqCache.set(pattern.tools.join("->"), pattern.count || 1);
+        // Derive category key from stored tools for seqCache restoration
+        const cats = pattern.tools.map(t => toolCategory(normalizeToolName(t)));
+        const uniqueCats = [...new Set(cats)];
+        if (uniqueCats.length >= 2) {
+          const key = uniqueCats.join("→");
+          this.seqCache.set(key, pattern.count || 1);
+          if (!this.seqInsertOrder.includes(key)) this.seqInsertOrder.push(key);
+        }
       }
+    }
+    while (this.seqInsertOrder.length > MAX_PATTERN_COUNT) {
+      this.seqCache.delete(this.seqInsertOrder.shift());
     }
   }
 
@@ -421,6 +441,12 @@ class PatternDetector {
         const toolKey = exp.toolsUsed.join("->");
         const count = (this.seqCache.get(catKey) || 0) + 1;
         this.seqCache.set(catKey, count);
+        if (!this.seqInsertOrder.includes(catKey)) {
+          this.seqInsertOrder.push(catKey);
+          while (this.seqInsertOrder.length > MAX_PATTERN_COUNT) {
+            this.seqCache.delete(this.seqInsertOrder.shift());
+          }
+        }
         if (count >= 3) {
           const pid = `workflow:${catKey}`;
           const desc = `跨类别工作流: ${catKey}`;
@@ -481,8 +507,10 @@ class PatternDetector {
       }
     }
 
-    // Build knowledge-tree relations for newly created/updated patterns
-    this._linkRelations(exp);
+    // Build knowledge-tree relations only when new patterns emerge
+    if (newPatterns.length > 0 || exp.correction) {
+      this._linkRelations(exp);
+    }
 
     return newPatterns;
   }
@@ -517,7 +545,8 @@ class PatternDetector {
         const taskMatch = activeTask !== "general" && (stored.context?.taskType || "general") === activeTask;
 
         let type = null, weight = 0;
-        if (catOverlap >= 2) { type = "shared-tools"; weight = catOverlap * 0.5; }
+        if (catOverlap >= 3) { type = "strong-related"; weight = catOverlap * 1.0; }
+        else if (catOverlap >= 2) { type = "shared-tools"; weight = catOverlap * 0.5; }
         else if (taskMatch) { type = "same-task"; weight = 0.3; }
         else if (catOverlap >= 1 && exp.correction) { type = "co-occurred"; weight = 0.2; }
         if (!type) continue;
@@ -571,7 +600,6 @@ class PatternDetector {
           if (new Set(pattern.tools).size === 1) return false;
         }
         // Skip generic noise
-        if (pattern.id === "error:tool_error") return false;
         if (pattern.type === "capability" || pattern.type === "host_capability") return false;
         if (pattern.id?.startsWith("usage_large")) return false;
         return true;
@@ -608,6 +636,7 @@ export default definePlugin({
     ensureDir();
 
     let config = loadConfig();
+    const seenRequestIds = new Set();
     const detector = new PatternDetector(config);
     const sessions = new Map();
     let lastSkillRefresh = 0;
@@ -615,7 +644,17 @@ export default definePlugin({
     runtimeState.sessionActivityCount = 0;
 
     const persistPatterns = () => {
-      fs.writeFileSync(PATTERNS_FILE, JSON.stringify(detector.all(), null, 2), "utf-8");
+      // Merge disk status before writing: control.js may have approved/rejected patterns
+      const mem = detector.all();
+      const disk = readJson(PATTERNS_FILE, []);
+      if (disk.length > 0) {
+        const diskStatus = new Map(disk.filter(p => p.id).map(p => [p.id, p.status]));
+        for (const m of mem) {
+          const ds = diskStatus.get(m.id);
+          if (ds === "approved" || ds === "rejected") m.status = ds;
+        }
+      }
+      fs.writeFileSync(PATTERNS_FILE, JSON.stringify(mem, null, 2), "utf-8");
     };
 
     const snapshotSkill = (skillPath) => {
@@ -762,8 +801,9 @@ export default definePlugin({
           if (meaningful.length) {
             recentLearn = meaningful.map(p => {
               const icon = p.type === 'preference' ? '💬' : p.type === 'error' ? '⚠️' : '🔄';
-              // Prefer advisor-distilled fix over raw desc; skip bare user quotes
-              const text = (p.fix && !p.fix.startsWith('User correction:')) ? p.fix : p.desc;
+          // Prefer advisor-distilled fix over raw desc; strip "User correction:" prefix from bare fixes
+            const text = (p.fix && !p.fix.startsWith('User correction:')) ? p.fix
+              : p.desc.replace(/^User correction: /, '');
               return `${icon} ${text.slice(0, 80)}`;
             }).join('\n');
           }
@@ -821,6 +861,9 @@ export default definePlugin({
     const recordUsage = (entry, sessionPath = null) => {
       if (!config.learnFromUsage) return;
       const summaryEntry = summarizeUsageEntry(entry, sessionPath);
+      const dedupKey = summaryEntry.requestId;
+      if (dedupKey && seenRequestIds.has(dedupKey)) return;
+      if (dedupKey) seenRequestIds.add(dedupKey);
       try {
         updateUsageSummary(summaryEntry);
         updateTokenDisplay();
@@ -1001,6 +1044,9 @@ export default definePlugin({
       }
 
       try {
+        // Refresh config from disk: control.js set_config may have updated it
+        config = { ...config, ...readJson(CONFIG_FILE, {}) };
+        detector.setConfig(config);
         autoApprovePatterns(key);
         persistPatterns();
         pruneDataFiles();
@@ -1010,8 +1056,98 @@ export default definePlugin({
         ctx.log.warn(`runtime-learner: refresh failed: ${err.message}`);
       }
 
+      // ── Adoption check: did the Agent use a searched workflow? ──
+      const pending = runtimeState.pendingAdoptionChecks.get(key);
+      if (pending) {
+        pending.remaining -= 1;
+        for (const s of pending.searches) {
+          if (s.tools.length === 0) continue;
+          const matchCount = s.tools.filter(t => tools.includes(t)).length;
+          if (matchCount >= Math.ceil(s.tools.length * 0.5)) {
+            const stored = detector.patterns.get(s.patternId);
+            if (stored) {
+              stored.score = (stored.score || 0) + 3;
+              stored.lastAdoptedAt = new Date().toISOString();
+              ctx.log.info(`runtime-learner: adopted workflow ${s.patternId}, score +3`);
+            }
+          }
+        }
+        if (pending.remaining <= 0) runtimeState.pendingAdoptionChecks.delete(key);
+      }
+
       sessions.delete(key);
     };
+
+    // ── Tool-end semantic handlers: registered by tool name ──
+    const toolEndHandlers = new Map();
+
+    // Feed official pin_memory into self-learning patterns
+    toolEndHandlers.set("pin_memory", (event, sessionPath) => {
+      try {
+        const args = event.args || event.input || {};
+        const content = typeof args.content === "string" ? args.content : JSON.stringify(args);
+        if (content && content.length < 500) {
+          const pexp = {
+            date: new Date().toISOString(),
+            taskType: "general",
+            toolsUsed: ["pin_memory"],
+            toolCallCount: 1,
+            correction: content,
+            resultStatus: "success",
+            stopReason: null,
+            errors: [],
+          };
+          detector.ingest(pexp);
+          persistPatterns();
+          refreshSkill();
+          ctx.log.info("runtime-learner: ingested pin_memory as preference pattern");
+        }
+      } catch (err) {
+        ctx.log.warn(`runtime-learner: pin_memory ingestion skipped: ${err.message}`);
+      }
+    });
+
+    // Feedback loop: track self_learning_search results for adoption scoring
+    toolEndHandlers.set("self_learning_search", (event, sessionPath) => {
+      try {
+        const raw = event.result;
+        if (typeof raw !== "string") return;
+        const parsed = JSON.parse(raw);
+        const results = parsed.results || [];
+        const ids = results.map(r => r.id).filter(Boolean);
+
+        // Immediate feedback: boost all returned patterns
+        if (ids.length > 0) {
+          let boosted = 0;
+          for (const id of ids) {
+            const stored = detector.patterns.get(id);
+            if (stored) {
+              stored.score = (stored.score || 0) + 1;
+              stored.lastSearchedAt = new Date().toISOString();
+              boosted += 1;
+            }
+          }
+          if (boosted > 0) {
+            persistPatterns();
+            ctx.log.info(`runtime-learner: feedback boosted ${boosted} pattern(s)`);
+          }
+        }
+
+        // Deferred: track workflow patterns for adoption check (next 3 turns)
+        const wfResults = results.filter(r => r.type === "workflow" && r.id);
+        if (wfResults.length > 0 && sessionPath) {
+          const searches = wfResults.map(r => {
+            const stored = detector.patterns.get(r.id);
+            return { patternId: r.id, tools: stored?.tools || [] };
+          }).filter(s => s.tools.length > 0);
+          if (searches.length > 0) {
+            runtimeState.pendingAdoptionChecks.set(sessionPath, { searches, remaining: 3 });
+          }
+        }
+      } catch (err) {
+        ctx.log.warn(`runtime-learner: feedback loop skipped: ${err.message}`);
+      }
+    });
 
     const unsubs = [];
     try {
@@ -1041,65 +1177,8 @@ export default definePlugin({
           turn.markToolEnd(event.toolName || event.name);
           if (event.isError) { turn.addError(extractToolError(event)); return; }
 
-          // ── 3-way integration ──
-
-          // 1. Feed official pin_memory into self-learning patterns
-          const toolName = normalizeToolName(event.toolName || event.name);
-          if (toolName === "pin_memory") {
-            try {
-              const args = event.args || event.input || {};
-              const content = typeof args.content === "string" ? args.content : JSON.stringify(args);
-              if (content && content.length < 500) {
-                const pexp = {
-                  date: new Date().toISOString(),
-                  taskType: "general",
-                  toolsUsed: ["pin_memory"],
-                  toolCallCount: 1,
-                  correction: content,
-                  resultStatus: "success",
-                  stopReason: null,
-                  errors: [],
-                };
-                detector.ingest(pexp);
-                persistPatterns();
-                refreshSkill();
-                ctx.log.info(`runtime-learner: ingested pin_memory as preference pattern`);
-              }
-            } catch (err) {
-              ctx.log.warn(`runtime-learner: pin_memory ingestion skipped: ${err.message}`);
-            }
-            return;
-          }
-
-          // 2. Feedback loop: boost patterns returned by self_learning_search
-          if (toolName === "self_learning_search") {
-            try {
-              const raw = event.result;
-              if (typeof raw === "string") {
-                const parsed = JSON.parse(raw);
-                const ids = (parsed.results || []).map(r => r.id).filter(Boolean);
-                if (ids.length > 0) {
-                  let boosted = 0;
-                  for (const id of ids) {
-                    const stored = detector.patterns.get(id);
-                    if (stored) {
-                      stored.score = (stored.score || 0) + 1;
-                      stored.lastSearchedAt = new Date().toISOString();
-                      boosted += 1;
-                    }
-                  }
-                  if (boosted > 0) {
-                    persistPatterns();
-                    ctx.log.info(`runtime-learner: feedback boosted ${boosted} pattern(s)`);
-                  }
-                }
-              }
-            } catch (err) {
-              ctx.log.warn(`runtime-learner: feedback loop skipped: ${err.message}`);
-            }
-            return;
-          }
-
+          const handler = toolEndHandlers.get(normalizeToolName(event.toolName || event.name));
+          if (handler) handler(event, sessionPath);
           return;
         }
 
@@ -1181,5 +1260,6 @@ export default definePlugin({
     runtimeState.refreshSkill = null;
     runtimeState.statusNotifiedAt.clear();
     runtimeState.advisorSkipReasons.clear();
+    runtimeState.pendingAdoptionChecks.clear();
   },
 });

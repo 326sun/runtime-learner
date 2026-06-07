@@ -38,7 +38,8 @@ Installed to C:\Users\你的用户名\.hanako\plugins\hanako-runtime-learner
 OK    manifest.json
 OK    index.js
 OK    lib/common.js
-OK    tools/control.js
+OK    lib/hana-runtime-compat.js
+OK    tools/search.js
 OK    skills/self-learning/SKILL.md
 ```
 

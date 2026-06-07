@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "hanako-runtime-learner",
   "name": "Runtime Self-Learning",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "运行时自我学习引擎：观察本地交互习惯，归纳重复工作流和错误，并注入保守的经验提示。",
   "author": "Sun",
   "trust": "full-access",
@@ -115,17 +115,17 @@
         },
         "tokenUsageSummary": {
           "type": "string",
-          "title": "📊 学习统计 · 运行时",
+          "title": "📊 Token 用量累计",
           "default": "暂无数据"
         },
         "learningStatsDetail": {
           "type": "string",
-          "title": "📊 学习统计 · 模式与活动",
+          "title": "📊 已学内容概览",
           "default": "暂无数据"
         },
         "recentLearnings": {
           "type": "string",
-          "title": "🧠 最近学到",
+          "title": "🧠 最近学到（近 3 条）",
           "default": "暂无"
         },
         "modelAdvisorUsage": {

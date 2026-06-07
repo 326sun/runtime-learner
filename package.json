@@ -1,24 +1,23 @@
 {
   "name": "hanako-runtime-learner",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Runtime self-learning engine for Hanako: observe local interaction patterns, learn repeated workflows and errors, inject conservative skill hints.",
   "author": "Sun",
   "license": "MIT",
   "type": "module",
   "files": [
-    "install.cjs",
     "LICENSE",
     "INSTALL.md",
     "manifest.json",
     "index.js",
     "lib/",
     "tools/",
-    "pages/",
     "skills/",
     "README.md"
   ],
   "scripts": {
     "install-plugin": "node install.cjs",
-    "check": "node --check install.cjs && node --check index.js && node --check lib/common.js && node --check lib/hana-runtime-compat.js && node --check lib/official-utility-model.js && node --check lib/model-advisor.js && node --check tools/stats.js && node --check tools/report.js && node --check tools/control.js && node --check tools/activity.js && node --check tools/open-dir.js && node --check tools/search.js"
+    "check": "node --check index.js && node --check lib/common.js && node --check lib/hana-runtime-compat.js && node --check lib/official-utility-model.js && node --check lib/model-advisor.js && node --check tools/stats.js && node --check tools/report.js && node --check tools/control.js && node --check tools/activity.js && node --check tools/open-dir.js && node --check tools/search.js",
+    "test": "node --test tests/common.test.js"
   }
 }

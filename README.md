@@ -1,51 +1,25 @@
 # Runtime Self-Learning
 
-不会安装时先看 [`INSTALL.md`](./INSTALL.md)。
+不会装？先看 [`INSTALL.md`](./INSTALL.md)。
 
-Hanako 桌面应用的本地自学习运行时插件。观察交互习惯，归纳重复模式和用户偏好，按需检索而非全量注入，控制 token 开销。
+**让 Hanako 从自己的运行日志里学东西。** 自动发现你重复做的工作流、常犯的错误、口头纠正过的偏好，下次对话时提醒 Agent 不要再踩同样的坑。
 
-## 为什么做
+## 一句话解释
 
-Hanako 每次对话都是无状态的——同一个错误可能重复犯，同样的工作流每次都要从头描述，用户的偏好说了就忘。这个插件给 Hanako 加了一层本地长期记忆，让它能从自己的运行日志中提取可复用的经验。
+Hanako 每次对话都是无状态的。同一个错误可能重复犯，同样的流程每次都要从头描述。这个插件给它加了一层本地长期记忆——不需要你手动 `pin_memory`，它自己从工具调用序列里找规律。
 
-最初只是一个被动日志（v0.1），现在已经演进为三层主动学习管道：观测（EventBus）→ 学习（分类检测 + 艾宾浩斯遗忘曲线 + 模型整理）→ 注入（按需检索 + 保守提示）。
+## 怎么工作的
 
-## 与 Hanako 官方记忆的区别
+```
+对话进行中 → EventBus 监听工具调用 → 会话结束触发学习 →
+→ 检测跨类别工作流 + 错误模式 + 你的纠正语句 →
+→ 艾宾浩斯遗忘曲线评分（重复越多的记得越牢）→
+→ Agent 需要时用 self_learning_search 检索相关经验
+```
 
-官方记忆（`pin_memory` / `search_memory`）提供手动触发、永久保留的键值存储。它的设计前提是"你告诉它该记什么"——适合你明确要求"记住这件事"的场景。
+**不占 token。** 学习到的模式存在本地，Agent 按需搜索，每次只注入几条相关的。存的越多，检索越准，但注入量不变。
 
-本插件填补的是另一个需求：**不需要你主动说，它自己从运行日志里找规律**。两者的差异不在于"谁更能存"，而在于触发方式、去噪策略、检索效率三个维度：
-
-| | 官方记忆 | Runtime Self-Learning |
-|---|---|---|
-| 触发方式 | 用户手动 pin | EventBus 自动观测 |
-| 内容来源 | 用户显式指令 | 工具调用序列、错误、纠正语句 |
-| 存储策略 | 永久保留 | 艾宾浩斯遗忘曲线 + 低分衰减淘汰 |
-| 检索方式 | 文本关键词 | 文本+上下文+类别+关系四路加权 |
-| 去噪机制 | 无 | 跨类别过滤、错误分类、遗忘淘汰 |
-| 与 Agent 的交互 | 注入系统提示 | 按需 search，不占用上下文窗口 |
-
-两者互补而非竞争。重要事实用官方记忆手动 pin，重复模式和偏好交给本插件自动学习。
-
-## 设计要点
-
-**按需检索，不占 token。** 学习到的模式存在本地图结构中，对话时通过 `self_learning_search` 按关键词、类型、上下文检索，只注入相关的几条。模式越多，检索越有价值，但每次注入量不变。
-
-**遗忘曲线保真去噪。** 基于艾宾浩斯遗忘规律的记忆强度模型：重复越多、时间越近的模式权重越高；低分模式自动衰减淘汰；approved 模式永久保留。避免无效模式堆积占用存储和检索质量。
-
-**后台小模型整理。** 启用 `modelAdvisor` 后，用小模型定期分析沉淀的模式，生成结构化的归纳建议替代原始用户文本。不需要大模型参与，利用 Hanako 自带的 utility model 即可。
-
-**跨类别工作流检测。** 工具序列按 8 个语义类别归类（文件探索、代码编写、网络研究等），只有跨 ≥2 个类别的序列才会被记录为工作流模式——过滤掉单步操作噪音。
-
-**零外部依赖。** 仅使用 Node.js 内置模块（fs、path、os），不安装任何第三方包。
-
-**与官方记忆互通。** 当你用 `pin_memory` 记住一件事时，插件自动将其吸收为 preference 模式，`self_learning_search` 可以一并搜到。
-
-**反馈回路。** 每次 Agent 调用 `self_learning_search` 并获取结果后，被命中的模式获得小幅评分加成。被频繁搜索的模式自然靠前，无需手动调权。
-
-**知识树关系。** 模式之间根据共享工具类别、相同任务类型、同轮共现自动建立关系边。搜索时关系权重参与排序，让相关的模式相互提权。
-
-## 安装
+## 装
 
 ```powershell
 git clone https://github.com/326sun/hanako-runtime-learner.git
@@ -53,54 +27,45 @@ cd hanako-runtime-learner
 npm run install-plugin
 ```
 
-## 工具
+## 工具（Agent 可调用）
 
-| 工具 | 说明 |
-|------|------|
-| `self_learning_search` | 按关键词、类型、任务上下文搜索模式（文本+上下文+关系+记忆+反馈五路加权） |
-| `self_learning_activity` | 最近学习活动时间线 |
-| `self_learning_stats` | 运行时统计：轮次、模式、可注入数 |
-| `self_learning_report` | N 日学习报告 |
-| `self_learning_control` | 查看、配置、回滚 |
+| 工具 | 做什么 |
+|------|--------|
+| `self_learning_search` 查询 | 按关键词搜经验（文本 + 上下文 + 关系 + 记忆四路加权） |
+| `self_learning_activity` | 最近学了什么 |
+| `self_learning_stats` | 学了多少、可注入几条 |
+| `self_learning_report` | N 天学习报告 |
+| `self_learning_control` | 批准/拒绝某条经验、调参数、回滚 |
 | `self_learning_open_dir` | 打开数据目录 |
-| `self_learning_chart` | 每日 Token 消耗柱状图（SVG，由宿主 skill 层提供） |
 
-## 配置
+## 测试
 
-| 键 | 类型 | 默认 | 说明 |
-|---|---|---|---|
-| `autoInjectHighConfidence` | boolean | true | 自动注入高置信提示 |
-| `autoApproveHighConfidence` | boolean | true | 自动批准（无需手动审批） |
-| `minInjectScore` | number | 8 | 注入最低评分 |
-| `minInjectCount` | number | 2 | 注入最少重复次数 |
-| `decayHalfLifeDays` | number | 30 | 记忆半衰期 |
-| `includePendingPreferences` | boolean | true | 未审核偏好也参与注入 |
-| `learnFromUsage` | boolean | true | 从 LLM 用量中学习 |
-| `modelAdvisorEnabled` | boolean | true | 启用后台整理 |
-| `modelAdvisorSource` | string | official | 整理模型（official / private / off） |
-| `workStatusEnabled` | boolean | true | 显示工作状态 |
+```powershell
+npm run test        # 25 个单元测试（衰减算法、注入判断、搜索评分）
+```
 
-设置页面中带 📊 📁 🧠 图标的展示字段为运行时只读数据，由插件动态更新，非用户可编辑配置。
+## 配置要点
+
+| 参数 | 默认 | 说明 |
+|------|------|------|
+| 自动注入 | 开 | 高置信经验自动可用，低分需手动批 |
+| 自动批准 | 开 | 高置信模式无需人工审批 |
+| 记忆半衰期 | 30 天 | 超过此天数分数减半，不活跃的经验自动遗忘 |
+| 后台整理 | 开 | 用小模型定期分析经验，生成结构化建议 |
+
+## 与官方记忆的关系
+
+- **官方记忆**（`pin_memory`）：你说"记住这个"，它记住。适合明确的重要事实。
+- **本插件**：你不用说，它自己看。适合重复模式、常见错误、隐性偏好。
+
+两者互补。而且你 `pin_memory` 的内容会自动被本插件吸收，搜索时一起找到。
 
 ## 数据
 
-所有数据存储于 `~/.hanako/self-learning/`，不离开本地。
+所有数据在 `~/.hanako/self-learning/`，不离开你的电脑。30 天自动清理过期日志。
 
-| 文件 | 内容 |
-|------|------|
-| `patterns.json` | 图结构模式（含 context、relations） |
-| `experience_log.jsonl` | 结构化学习记录 |
-| `turns.jsonl` | 紧凑轮次记录 |
-| `error_log.jsonl` | 工具错误记录 |
-| `activity_log.jsonl` | 学习活动时间线 |
-| `skill_history/` | SKILL.md 快照（最多 20） |
+## 卸
 
-所有日志文件保留 30 天，自动清理。
-
-## 卸载
-
-删除 `~/.hanako/plugins/hanako-runtime-learner/`，重启。学习数据在 `~/.hanako/self-learning/`，可单独删除。
-
-## 许可证
+删 `~/.hanako/plugins/hanako-runtime-learner/`，重启。学习数据在 `~/.hanako/self-learning/` 单独可删。
 
 MIT
