@@ -1,5 +1,4 @@
 <p align="center">
-  <img src="" alt="logo" width="120"><br>
   <strong>运行时自我学习引擎</strong><br>
   <sub>让 Hanako 从你的交互中持续进化</sub>
 </p>
