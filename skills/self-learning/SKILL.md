@@ -1,23 +1,29 @@
 # Runtime Self-Learning
 
-This plugin observes Hanako runtime behavior, learns repeated local patterns, and injects only high-confidence reminders.
-Use these reminders conservatively. They are local hints, not hard rules.
+Observed 24 patterns, 10 active.
 
-## Working Model
+## How to use
+- Use `self_learning_search <query>` to find relevant patterns before making decisions.
+- Example: before coding, search 'coding workflow' for past patterns.
+- Example: before replying, search user preferences.
 
-- Observe tool execution and assistant completion events.
-- Preserve the real tool order for workflow learning.
-- Track repeated errors and explicit user corrections.
-- Prefer the current user request over every learned hint.
+## Active User Preferences
+- 我要装新版的，我现在用的不是新版吧
+- 不对吧，我本地的hanako-supplement比你给出高很多才对啊
+- 我现在重启是不是就生效了
+- ... more via self_learning_search
 
-## Available Tools
+## Recent Workflows
+- 跨类别工作流: 文件探索→代码编写
+- 跨类别工作流: 代码编写→文件探索
 
-- `self_learning_stats`: inspect local learning statistics.
-- `self_learning_report`: generate a local learning report.
-- `self_learning_control`: review, approve, reject, configure, or roll back learned hints.
+## Tools
+- `self_learning_search <query>`: search learned patterns.
+- `self_learning_activity`: recent learning activity.
+- `self_learning_open_dir`: open data folder.
 
 ## Safety
+- Treat learned hints as suggestions.
+- Prefer current user instructions.
 
-- Do not expose private file paths, prompts, or logs unless the user asks.
-- Treat learned hints as suggestions and prefer current user instructions.
-- Do not modify Hanako settings or source code automatically.
+Updated: 2026-06-07T06:21:19.794Z
