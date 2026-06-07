@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "hanako-runtime-learner",
   "name": "Runtime Self-Learning",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "运行时自我学习引擎：观察本地交互习惯，归纳重复工作流和错误，并注入保守的经验提示。",
   "author": "Sun",
   "trust": "full-access",

@@ -730,6 +730,26 @@ export default definePlugin({
     let config = loadConfig();
     const seenRequestIds = new Set();
     const detector = new PatternDetector(config);
+
+    // One-time migration: any previously auto-approved preferences are
+    // now archival-only. Downgrade them to pending so the label matches
+    // the new three-tier semantics.
+    try {
+      const patterns = readJson(PATTERNS_FILE, []);
+      let migrated = 0;
+      for (const p of patterns) {
+        if (p.type === "preference" && p.status === "approved") {
+          p.status = "pending";
+          p.reviewedAt = null;
+          migrated += 1;
+        }
+      }
+      if (migrated > 0) {
+        writeJson(PATTERNS_FILE, patterns);
+        ctx.log.info(`runtime-learner: migrated ${migrated} approved preferences to pending`);
+      }
+    } catch {}
+
     const sessions = new Map();
     let lastSkillRefresh = 0;
     runtimeState.sessionStart = new Date().toISOString();
