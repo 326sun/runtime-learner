@@ -706,6 +706,7 @@ function buildSkillMd(detector, config) {
 
 export default definePlugin({
   async onload(ctx, { register }) {
+    try {
     ensureDir();
 
     let config = loadConfig();
@@ -1404,6 +1405,9 @@ export default definePlugin({
     ctx.log.info("runtime-learner: started three-layer self-learning runtime");
 
     updateTokenDisplay();
+    } catch (err) {
+      try { ctx.log.error(`runtime-learner: onload failed: ${err.message}`); } catch {}
+    }
   },
 
   async onunload() {
