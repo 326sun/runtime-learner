@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.9
+
+- 降噪：`usage:failed_request:*` 模式不再生成 code_patch 提案（网络问题非代码缺陷）
+
 ## 0.7.8
 
 - model advisor 高风险建议自动转化为 code_patch 提案：低/中风险走 pattern.fix merge 路径流入技能文本，高风险生成可审查的 code_patch 并通知用户
