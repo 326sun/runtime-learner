@@ -111,7 +111,7 @@
         "modelAdvisorMinIntervalMinutes": {
           "type": "number",
           "title": "后台整理最小间隔（分钟）",
-          "default": 180
+          "default": 60
         },
         "workStatusEnabled": {
           "type": "boolean",
