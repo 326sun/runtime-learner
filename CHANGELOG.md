@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.8
+
+- model advisor 高风险建议自动转化为 code_patch 提案：低/中风险走 pattern.fix merge 路径流入技能文本，高风险生成可审查的 code_patch 并通知用户
+- 消除 model advisor 输出与 proposal 系统的脱节
+
 ## 0.7.7
 
 - 错误分类细化：`classifyError` 新增 `command_not_found`、`syntax_error`、`path_error` 三个细分类型，`tool_error` 增加退出码匹配

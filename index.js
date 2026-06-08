@@ -571,6 +571,39 @@ export default definePlugin({
               ctx.log.info(`runtime-learner: merged ${merged} advisor insights into patterns`);
               refreshSkill(true, sessionPath);
             }
+
+            // Convert high-risk advisor suggestions into reviewable code_patch proposals.
+            // Low/medium risk suggestions are already handled by the merge loop above
+            // (injected into pattern.fix => flows into next SKILL.md regeneration).
+            // High-risk items need human review, so they become code_patch proposals.
+            const highRiskSuggestions = result.advice.suggestions.filter((s) => s.risk === "high" && detector.patterns.has(s.patternId));
+            if (highRiskSuggestions.length > 0) {
+              const toNotify = [];
+              let created = 0;
+              for (const s of highRiskSuggestions) {
+                const pattern = detector.patterns.get(s.patternId);
+                const proposal = buildCodePatchProposal({
+                  learnerDir: DATA_DIR,
+                  pattern: {
+                    ...pattern,
+                    fix: sanitizeAdvice(s.advice),
+                  },
+                });
+                if (proposal.status === "pending") {
+                  if (proposal.createdAt === proposal.updatedAt) created += 1;
+                  toNotify.push(proposal);
+                }
+              }
+              if (created > 0) {
+                logActivity({
+                  type: "proposal_created",
+                  summary: `Model advisor flagged ${created} high-risk pattern(s) for review`,
+                  sessionPath,
+                });
+                runtimeState.sessionActivityCount += 1;
+              }
+              void notifyProposalReview(sessionPath, toNotify);
+            }
           }
           await notifyWorkStatus(sessionPath, count > 0 ? `已生成 ${count} 条候选建议` : "已完成");
         } else if (!_cachedAdvisorSkip(result.reason)) {
