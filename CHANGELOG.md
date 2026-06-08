@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.7
+
+- 错误分类细化：`classifyError` 新增 `command_not_found`、`syntax_error`、`path_error` 三个细分类型，`tool_error` 增加退出码匹配
+- `PatternDetector.ingestError` 根据错误类型区分可重试/不可重试，非可重试错误（权限拒绝、命令不存在、语法/路径错误等）明确禁止盲目重试
+- 生成 skill 的安全部分改写为三级重试策略（不可重试/可重试/未知）
+
 ## 0.7.6
 
 - 性能:`pruneProposals` 增加廉价的文件计数门槛,稳态(≤40 个提案)直接跳过解析全部 JSON 的扫描——消除上一版给提案写入热路径带来的开销

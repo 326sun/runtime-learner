@@ -1,6 +1,6 @@
 {
   "name": "hanako-runtime-learner",
-  "version": "0.7.6",
+  "version": "0.7.7",
   "description": "Runtime self-learning engine for Hanako: observe local interaction patterns, learn repeated workflows and errors, inject conservative skill hints.",
   "author": "Sun",
   "license": "MIT",
