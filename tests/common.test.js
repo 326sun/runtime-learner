@@ -115,9 +115,9 @@ describe("isInjectable", () => {
     assert.equal(isInjectable(pattern, config), false);
   });
 
-  it("pending preference is injectable when includePendingPreferences is on", () => {
-    const pattern = { status: "pending", type: "preference", score: 0, count: 1, fix: "do this" };
-    assert.equal(isInjectable(pattern, config), true);
+  it("pending preference is never injectable (archival by design)", () => {
+    const pattern = { status: "pending", type: "preference", score: 20, count: 5, fix: "do this" };
+    assert.equal(isInjectable(pattern, config), false);
   });
 
   it("null pattern returns false", () => {
@@ -186,8 +186,6 @@ describe("buildSkillMdFromPatterns", () => {
     ];
     const md = buildSkillMdFromPatterns(patterns, config, { turnCount: 10, dataDir: "/tmp/test" });
     assert.ok(md.includes("# Runtime Self-Learning"));
-    assert.ok(md.includes("Active User Preferences"));
-    assert.ok(md.includes("Always use tabs"));
     assert.ok(md.includes("Recent Workflows"));
   });
 
