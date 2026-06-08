@@ -462,9 +462,9 @@ export default definePlugin({
         if ((pattern.count || 0) < CODE_PROPOSAL_MIN_COUNT) continue;
         // Skip patterns that are inherently non-code issues:
         // - usage:failed_request → always a network/provider problem
-        // - error patterns already routed through model advisor (will get
-        //   their own code_patch if flagged high-risk by the advisor)
+        // - approved patterns → already acknowledged by user, don't re-propose
         if (pattern.id && pattern.id.startsWith("usage:failed_request")) continue;
+        if (pattern.status === "approved") continue;
         const proposal = buildCodePatchProposal({ learnerDir: DATA_DIR, pattern });
         if (proposal.status === "pending") {
           if (proposal.createdAt === proposal.updatedAt) created += 1;

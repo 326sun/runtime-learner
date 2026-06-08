@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.0
+
+- 降噪：`maybeProposeCodeImprovements` 跳过 `approved` 模式，已处理过的 error/usage 不再重复提案
+- 此前 v0.7.7~v0.7.9 的累积改进合并：错误分类细化（9 类+可重试区分）、model advisor 高风险→提案、usage:failed_request 过滤、advisor 间隔 180→60min
+
 ## 0.7.9
 
 - 降噪：`usage:failed_request:*` 模式不再生成 code_patch 提案（网络问题非代码缺陷）
