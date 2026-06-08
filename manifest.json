@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "hanako-runtime-learner",
   "name": "Runtime Self-Learning",
-  "version": "0.7.2",
+  "version": "0.7.6",
   "description": "运行时自我学习引擎：观察本地交互习惯，归纳重复工作流和错误，并注入保守的经验提示。",
   "author": "Sun",
   "trust": "full-access",
@@ -80,8 +80,8 @@
         },
         "modelAdvisorEnabled": {
           "type": "boolean",
-          "title": "启用小模型后台整理",
-          "default": true
+          "title": "启用小模型后台整理（会把归纳后的工作流/错误模式发送到你配置的小模型端点）",
+          "default": false
         },
         "modelAdvisorSource": {
           "type": "string",
@@ -115,8 +115,8 @@
         },
         "workStatusEnabled": {
           "type": "boolean",
-          "title": "显示自我学习工作状态",
-          "default": true
+          "title": "在对话中显示自我学习工作状态（默认关闭，会主动插入消息）",
+          "default": false
         },
         "workStatusText": {
           "type": "string",
@@ -125,28 +125,8 @@
         },
         "proposalChatNotificationsEnabled": {
           "type": "boolean",
-          "title": "在对话中通知待处理改进提案",
-          "default": true
-        },
-        "tokenUsageSummary": {
-          "type": "string",
-          "title": "📊 Token 用量累计",
-          "default": "暂无数据"
-        },
-        "learningStatsDetail": {
-          "type": "string",
-          "title": "📊 已学内容概览",
-          "default": "暂无数据"
-        },
-        "recentLearnings": {
-          "type": "string",
-          "title": "🧠 最近学到（近 3 条）",
-          "default": "暂无"
-        },
-        "modelAdvisorUsage": {
-          "type": "string",
-          "title": "📊 学习统计 · 后台整理消耗",
-          "default": "暂无数据"
+          "title": "在对话中通知待处理改进提案（默认关闭，会主动插入消息）",
+          "default": false
         },
         "dataDirPath": {
           "type": "string",

@@ -1,5 +1,7 @@
 node_modules/
-$null
 *.log
+*.tmp
 .DS_Store
 Thumbs.db
+.idea/
+.vscode/

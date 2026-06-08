@@ -64,4 +64,32 @@ describe("proposal engine", () => {
     assert.equal(proposal.autoApply, false);
     assert.throws(() => applyProposal(tmpDir, proposal.id), /cannot be auto-applied/);
   });
+
+  it("caps resolved proposals but always keeps pending ones", () => {
+    // Create + apply 45 distinct skill_patch proposals (terminal "applied").
+    for (let i = 0; i < 45; i++) {
+      const skillPath = path.join(tmpDir, "plugin", "skills", "self-learning", "SKILL.md");
+      const content = `# Runtime Self-Learning\n\nhint ${i}\n`;
+      const p = buildSkillPatchProposal({ learnerDir: tmpDir, skillPath, content });
+      applyProposal(tmpDir, p.id);
+    }
+    // And a couple of pending code_patch proposals (actionable, must survive).
+    const pendingIds = [];
+    for (let i = 0; i < 3; i++) {
+      const p = buildCodePatchProposal({
+        learnerDir: tmpDir,
+        pattern: { id: `error:type_${i}`, type: "error", count: 3, desc: `err ${i}`, fix: `fix ${i}` },
+      });
+      pendingIds.push(p.id);
+    }
+
+    const applied = listProposals(tmpDir, { status: "applied" });
+    assert.ok(applied.length <= 40, `applied capped at 40, got ${applied.length}`);
+
+    const pending = listProposals(tmpDir, { status: "pending" });
+    assert.equal(pending.length, 3, "all pending proposals retained");
+    for (const id of pendingIds) {
+      assert.ok(pending.some((p) => p.id === id), `pending ${id} kept`);
+    }
+  });
 });

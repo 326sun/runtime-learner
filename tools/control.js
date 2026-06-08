@@ -50,7 +50,7 @@ const tool = defineTool({
     properties: {
       action: {
         type: "string",
-        enum: ["status", "list", "approve", "reject", "set_config", "rollback", "regenerate_skill", "run_model_advisor", "list_proposals", "show_proposal", "apply_proposal", "reject_proposal"],
+        enum: ["status", "list", "approve", "reject", "set_config", "rollback", "regenerate_skill", "run_model_advisor", "list_proposals", "show_proposal", "apply_proposal", "reject_proposal", "diagnose_bus"],
         description: "Control action to run.",
       },
       id: { type: "string", description: "Pattern id for approve/reject." },
@@ -217,6 +217,34 @@ const tool = defineTool({
       fs.mkdirSync(path.dirname(p.skillPath), { recursive: true });
       fs.copyFileSync(path.join(p.historyDir, latest), p.skillPath);
       return JSON.stringify({ ok: true, restored: latest, skillPath: p.skillPath }, null, 2);
+    }
+
+    if (action === "diagnose_bus") {
+      const diag = {
+        hasBus: !!ctx?.bus,
+        hasRequest: typeof ctx?.bus?.request === "function",
+        hasGetCapability: typeof ctx?.bus?.getCapability === "function",
+        hasHasHandler: typeof ctx?.bus?.hasHandler === "function",
+        sessionSendCap: null,
+        sessionSendTest: null,
+      };
+      try {
+        diag.sessionSendCap = ctx?.bus?.getCapability?.("session:send") || null;
+      } catch (e) { diag.sessionSendCap = { error: e.message }; }
+      try {
+        if (input.sessionPath) {
+          const result = await ctx.bus.request("session:send", {
+            sessionPath: input.sessionPath,
+            text: "[self-evolve diagnostic] session:send test",
+          });
+          diag.sessionSendTest = { ok: true, result };
+        } else {
+          diag.sessionSendTest = { skipped: "no sessionPath provided in input" };
+        }
+      } catch (e) {
+        diag.sessionSendTest = { ok: false, error: e.message, stack: e.stack?.slice(0, 300) };
+      }
+      return JSON.stringify(diag, null, 2);
     }
 
     throw new Error(`unknown action: ${action}`);

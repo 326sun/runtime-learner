@@ -263,6 +263,26 @@ describe("buildSkillMdFromPatterns", () => {
     assert.ok(md.includes("0 active"));
   });
 
+  it("trims to budget lowest-priority first (incremental token accounting)", () => {
+    const now = new Date().toISOString();
+    const mk = (id, type, fix) => ({ id, type, status: type === "preference" ? "approved" : "pending", knowledgeTier: type === "preference" ? "durable" : undefined, score: 30, count: 5, lastSeen: now, desc: `${id} desc`, fix });
+    const patterns = [];
+    for (let i = 0; i < 5; i++) patterns.push(mk(`error:e${i}`, "error", `runtime hint ${i} ${"x".repeat(40)}`));
+    for (let i = 0; i < 5; i++) patterns.push(mk(`workflow:a${i}→b${i}`, "workflow", null));
+    for (let i = 0; i < 5; i++) patterns.push(mk(`pref:p${i}`, "preference", `important preference ${i} ${"y".repeat(40)}`));
+
+    const tight = { ...config, maxSkillTokens: 200 };
+    const md = buildSkillMdFromPatterns(patterns, tight, { turnCount: 15 });
+
+    // Runtime Hints are trimmed first, Preferences last → at least one
+    // preference must survive while the doc stays near budget.
+    assert.ok(md.includes("important preference 0"), "highest-priority preference retained");
+    assert.ok(md.includes("# Runtime Self-Learning"));
+    // Budget is a soft cap; the trimmed result must be far below the untrimmed size.
+    const untrimmed = buildSkillMdFromPatterns(patterns, { ...config, maxSkillTokens: 100000 }, { turnCount: 15 });
+    assert.ok(md.length < untrimmed.length, "trimmed output is smaller than untrimmed");
+  });
+
   it("includes injectable runtime hints", () => {
     const patterns = [
       {

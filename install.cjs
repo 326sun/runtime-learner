@@ -28,6 +28,8 @@ const JS_FILES = [
   "lib/official-utility-model.js",
   "lib/model-advisor.js",
   "lib/official-memory-bridge.js",
+  "lib/pattern-detector.js",
+  "lib/observer.js",
   "lib/proposals.js",
   "lib/session-turn.js",
   "tools/stats.js",

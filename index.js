@@ -11,18 +11,20 @@
 
 import fs from "fs";
 import path from "path";
-import crypto from "crypto";
-import { DEFAULT_CONFIG, learnerDir, readJson, writeJson, decayedScore, patternStatus, isInjectable, describeOfficialUtilityModel, countJsonl, memoryStrength, buildSkillMdFromPatterns, knowledgeTier } from "./lib/common.js";
+import { DEFAULT_CONFIG, learnerDir, readJson, writeJson, describeOfficialUtilityModel, countJsonl, buildSkillMdFromPatterns } from "./lib/common.js";
 import { definePlugin } from "./lib/hana-runtime-compat.js";
 import { readModelAdvice, runModelAdvisor } from "./lib/model-advisor.js";
 import { applyProposal, buildCodePatchProposal, buildSkillPatchProposal } from "./lib/proposals.js";
-import { normalizeToolName, safeText, toolCategory } from "./lib/helpers.js";
+import { normalizeToolName, safeText, toolCategory, shortHash, preferencePatternId, stableKey, isUsageFailure, TASK_SIGS, ERR_PATTERNS, CORRECTION_STRONG, CORRECTION_WEAK, classifyTask, classifyError, extractCorrectionFromUserText } from "./lib/helpers.js";
 import { SessionTurn } from "./lib/session-turn.js";
+import { PatternDetector } from "./lib/pattern-detector.js";
+import { createObserver } from "./lib/observer.js";
 
 const DATA_DIR = learnerDir();
 const EXPERIENCE_LOG = path.join(DATA_DIR, "experience_log.jsonl");
 const ERROR_LOG = path.join(DATA_DIR, "error_log.jsonl");
 const USAGE_SUMMARY_FILE = path.join(DATA_DIR, "usage_summary.json");
+const USAGE_SEEN_FILE = path.join(DATA_DIR, "usage_seen.json");
 const CAPABILITIES_FILE = path.join(DATA_DIR, "host_capabilities.json");
 const PATTERNS_FILE = path.join(DATA_DIR, "patterns.json");
 const TURNS_FILE = path.join(DATA_DIR, "turns.jsonl");
@@ -34,7 +36,6 @@ const SKILL_REFRESH_MIN_MS = 10_000;
 const MAX_SKILL_HISTORY = 20;
 const MAX_ACTIVITY_ENTRIES = 500;
 const LOG_RETENTION_DAYS = 30;
-const MAX_PATTERN_COUNT = 50;
 const MAX_LOG_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB — skip prune for small files
 const CODE_PROPOSAL_MIN_COUNT = 3;
 
@@ -43,55 +44,17 @@ const runtimeState = {
   sessions: null,
   unsub: null,
   persistPatterns: null,
+  persistSeenIds: null,
   refreshSkill: null,
   statusNotifiedAt: new Map(),
   advisorSkipReasons: new Set(),
-  proposalNotifiedIds: new Set(),
+  proposalNotifiedIds: new Map(), // proposalId → lastNotifiedAt timestamp
   sessionStart: null,
   sessionActivityCount: 0,
-  pendingAdoptionChecks: new Map(), // sessionPath → { searches: [{patternId, tools}], remaining: 3 }
+  pendingAdoptionChecks: new Map(),
 };
 
-const TASK_SIGS = {
-  file_management: { tools: ["read", "write", "edit", "find", "grep", "ls"], min: 1 },
-  coding: { tools: ["bash", "write", "edit", "grep"], min: 2 },
-  document_processing: { tools: ["read", "write"], min: 1 },
-  research: { tools: ["web_search", "web_fetch", "browser"], min: 1 },
-  planning: { tools: ["todo_write", "subagent", "workflow"], min: 1 },
-};
-
-const ERR_PATTERNS = {
-  file_not_found: [/ENOENT/i, /no such file/i, /file not found/i],
-  permission_denied: [/EACCES/i, /permission denied/i, /access is denied/i],
-  network_error: [/ECONNREFUSED/i, /ETIMEDOUT/i, /fetch failed/i, /network/i],
-  auth_error: [/401/i, /403/i, /unauthorized/i, /invalid api key/i],
-  model_error: [/context length/i, /token limit/i, /stopReason=length/i],
-  tool_error: [/failed/i, /error/i],
-};
-
-// Tier 1: strong signals — single match is enough
-const CORRECTION_STRONG = [
-  /(?:不对|错了|不应该|不要这样|别这样|纠正|按我说的)/i,
-  /(?:wrong|incorrect|should have|should not have)/i,
-];
-// Tier 2: weak signals — need ≥2 co-occurring to count as correction
-const CORRECTION_WEAK = [
-  /改成/i, /以后/i, /下次/i, /记住/i, /应该/i, /默认/i,
-  /actually/i, /remember/i, /next time/i, /don't/i, /do not/i, /instead/i,
-];
-const CORRECTION_PATTERNS = CORRECTION_STRONG; // kept for backward compat in extraction
-
-const DURABLE_SETTING_PATTERNS = [
-  /(?:请?记住|以后都|以后默认|默认使用|长期|固定|总是|每次都|作为设定|写入记忆)/i,
-  /(?:remember this|from now on|always|default to|make this a setting|pin this)/i,
-];
-
-function preferenceTierFromText(text, toolsUsed = []) {
-  if ((toolsUsed || []).map(normalizeToolName).includes("pin_memory")) return "durable";
-  const clean = safeText(text, 300);
-  if (DURABLE_SETTING_PATTERNS.some((pattern) => pattern.test(clean))) return "durable";
-  return "core";
-}
+const CORRECTION_PATTERNS = CORRECTION_STRONG;
 
 function ensureDir() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -103,6 +66,23 @@ function appendJsonl(file, value) {
   fs.appendFileSync(file, `${JSON.stringify(value)}\n`, "utf-8");
 }
 
+// Sanitize a snippet returned by the external advisor model before it is stored
+// in a pattern's `fix` and injected into SKILL.md. Strips code fences, markdown
+// headings and obvious role/prompt markers, collapses whitespace, and caps
+// length, so a hijacked endpoint cannot smuggle instructions into the agent's
+// context.
+function sanitizeAdvice(text, max = 200) {
+  let s = String(text || "");
+  if (!s) return "";
+  s = s.replace(/```[\s\S]*?```/g, " ")       // fenced code blocks
+       .replace(/^\s*#{1,6}\s+/gm, "")          // markdown headings
+       .replace(/^\s*(system|assistant|user)\s*:/gim, "") // role markers
+       .replace(/[`*_>#]/g, "")                 // markdown control chars
+       .replace(/\s+/g, " ")
+       .trim();
+  return s.slice(0, max);
+}
+
 function loadConfig() {
   try {
     if (fs.existsSync(CONFIG_FILE)) {
@@ -112,26 +92,6 @@ function loadConfig() {
   } catch {}
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(DEFAULT_CONFIG, null, 2), "utf-8");
   return { ...DEFAULT_CONFIG };
-}
-
-function classifyTask(tools) {
-  let best = "general";
-  let bestScore = 0;
-  for (const [type, sig] of Object.entries(TASK_SIGS)) {
-    const matches = tools.filter((tool) => sig.tools.includes(tool)).length;
-    if (matches >= sig.min && matches > bestScore) {
-      best = type;
-      bestScore = matches;
-    }
-  }
-  return best;
-}
-
-function classifyError(msg) {
-  for (const [type, patterns] of Object.entries(ERR_PATTERNS)) {
-    if (patterns.some((p) => p.test(msg))) return type;
-  }
-  return "unknown";
 }
 
 function usageModelKey(entry = {}) {
@@ -146,27 +106,6 @@ function usageTotalTokens(entry = {}) {
   const input = entry.usage?.input?.totalTokens;
   const output = entry.usage?.output?.totalTokens;
   return (Number.isFinite(input) ? input : 0) + (Number.isFinite(output) ? output : 0);
-}
-
-function shortHash(text) {
-  return crypto.createHash("sha256").update(String(text || "")).digest("hex").slice(0, 8);
-}
-
-function preferencePatternId(text) {
-  return `pref:${String(text || "").slice(0, 80)}:${shortHash(text)}`;
-}
-
-function stableKey(value) {
-  return String(value || "unknown")
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 80) || "unknown";
-}
-
-function isUsageFailure(entry = {}) {
-  const status = String(entry.status || "").toLowerCase();
-  return !!(entry.error || (status && status !== "unknown" && !["success", "ok", "completed", "complete"].includes(status)));
 }
 
 function summarizeUsageEntry(entry = {}, sessionPath = null) {
@@ -290,41 +229,12 @@ async function pruneDataFiles() {
     } catch {}
   }
 
-  // Clean patterns.json: forgetting-curve based retention
-  try {
-    if (!fs.existsSync(PATTERNS_FILE)) return;
-    const raw = await fs.promises.readFile(PATTERNS_FILE, "utf-8");
-    let all = JSON.parse(raw);
-    if (!Array.isArray(all)) return;
-    const config = readJson(CONFIG_FILE, DEFAULT_CONFIG);
-    const strengthThreshold = 1.5; // Below this and not approved → forget
-
-    // ── Preferences: archival tier, not subject to forgetting curve ──
-    // Kept permanently but capped by count (latest wins).
-    const durableMax = Math.max(1, Number(config.durableMemoryMaxCount || DEFAULT_CONFIG.durableMemoryMaxCount));
-    const durable = all.filter(p => knowledgeTier(p) === "durable" && p.status !== "rejected");
-    const coreSource = all.filter(p => knowledgeTier(p) === "core");
-    if (durable.length > durableMax) {
-      durable.sort((a, b) => (b.lastSeen || b.firstSeen || b.date || "").localeCompare(a.lastSeen || a.firstSeen || a.date || ""));
-      durable.splice(durableMax);
-    }
-
-    // ── Core patterns: forgetting-curve based retention ──
-    let core = coreSource.filter(p => {
-      if (p.status === "approved") return true;
-      const ms = memoryStrength(p, config);
-      return ms >= strengthThreshold;
-    });
-
-    // Cap total count: keep top N by memory strength
-    if (core.length > MAX_PATTERN_COUNT) {
-      core.sort((a, b) => (memoryStrength(b, config) || 0) - (memoryStrength(a, config) || 0));
-      core = core.slice(0, MAX_PATTERN_COUNT);
-    }
-
-    all = [...core, ...durable];
-    await fs.promises.writeFile(PATTERNS_FILE, JSON.stringify(all, null, 2), "utf-8");
-  } catch {}
+  // NOTE: patterns.json retention is intentionally NOT handled here. It used to
+  // read+rewrite the file on disk, but the in-memory detector re-persists its
+  // full set on the next flush, so this disk-side pruning was immediately
+  // overwritten (dead work + disk churn + memory/disk disagreement). Retention
+  // is now centralised in PatternDetector.pruneMemory(), the single source of
+  // truth, invoked from the flush path before persistPatterns().
 }
 
 function readRecentActivity(days = 1) {
@@ -359,335 +269,6 @@ function readRecentActivity(days = 1) {
   return [];
 }
 
-/* ── PatternDetector ── */
-
-class PatternDetector {
-  constructor(config) {
-    this.config = config;
-    this.patterns = new Map();
-    this.seqCache = new Map();
-    this.seqInsertOrder = [];
-    this.turnCount = 0;
-  }
-
-  setConfig(config) {
-    this.config = config;
-  }
-
-  restore(saved) {
-    for (const pattern of saved || []) {
-      if (!pattern?.id) continue;
-      this.patterns.set(pattern.id, pattern);
-      if (pattern.type === "workflow" && Array.isArray(pattern.tools)) {
-        // Derive category key from stored tools for seqCache restoration
-        const cats = pattern.tools.map(t => toolCategory(normalizeToolName(t)));
-        const uniqueCats = [...new Set(cats)].sort();
-        if (uniqueCats.length >= 2) {
-          const key = uniqueCats.join("→");
-          this.seqCache.set(key, pattern.count || 1);
-          if (!this.seqInsertOrder.includes(key)) this.seqInsertOrder.push(key);
-        }
-      }
-    }
-    while (this.seqInsertOrder.length > MAX_PATTERN_COUNT) {
-      this.seqCache.delete(this.seqInsertOrder.shift());
-    }
-  }
-
-  ingest(exp) {
-    this.turnCount += 1;
-    const newPatterns = [];
-
-    // Workflow detection: category-level, skip single-category chains
-    if (exp.toolsUsed.length >= 2) {
-      const cats = exp.toolsUsed.map(t => toolCategory(normalizeToolName(t)));
-      const uniqueCats = [...new Set(cats)].sort();
-      if (uniqueCats.length >= 2) {
-        const catKey = uniqueCats.join("→");
-        const toolKey = exp.toolsUsed.join("->");
-        const count = (this.seqCache.get(catKey) || 0) + 1;
-        this.seqCache.set(catKey, count);
-        if (!this.seqInsertOrder.includes(catKey)) {
-          this.seqInsertOrder.push(catKey);
-          while (this.seqInsertOrder.length > MAX_PATTERN_COUNT) {
-            this.seqCache.delete(this.seqInsertOrder.shift());
-          }
-        }
-        if (count >= 3) {
-          const pid = `workflow:${catKey}`;
-          const desc = `跨类别工作流: ${catKey}`;
-          const existing = this.patterns.get(pid);
-          const hint = `This ${uniqueCats.join(" → ")} sequence repeats across sessions. Consider whether these steps can be automated or consolidated.`;
-          const ctx = {
-            taskType: exp.taskType || "general",
-            tools: [...exp.toolsUsed],
-            categories: uniqueCats,
-          };
-          if (existing) {
-            const wasBelow = existing.count < 3;
-            existing.count = count;
-            existing.lastSeen = exp.date;
-            existing.score = Math.max(existing.score || 0, count * 3);
-            existing.tools = [...new Set([...(existing.tools || []), ...exp.toolsUsed])];
-            existing.context = { ...existing.context, ...ctx, taskType: [...new Set([...(existing.context?.taskType ? [existing.context.taskType] : []), ctx.taskType])].join(",") };
-            // Track tool-level sub-signatures for actionable hints
-            const subs = existing.subSignatures = existing.subSignatures || {};
-            subs[toolKey] = (subs[toolKey] || 0) + 1;
-            // Prune: keep top 10 sub-signatures
-            const subEntries = Object.entries(subs).sort((a, b) => b[1] - a[1]);
-            if (subEntries.length > 10) {
-              existing.subSignatures = Object.fromEntries(subEntries.slice(0, 10));
-            }
-            // Upgrade hint when a specific sub-signature dominates
-            const topSub = subEntries[0];
-            if (topSub && topSub[1] >= 3) {
-              existing.fix = `Common sequence: ${topSub[0].replace(/->/g, " → ")} (seen ${topSub[1]}×). Consider automating or templating this flow.`;
-            }
-            if (wasBelow) newPatterns.push({ id: pid, type: "workflow", desc, count });
-          } else {
-            const subSigs = {};
-            subSigs[toolKey] = 1;
-            this.patterns.set(pid, {
-              id: pid, type: "workflow", status: "pending",
-              desc, count, context: ctx,
-              firstSeen: exp.date, lastSeen: exp.date,
-              score: count * 3, tools: [...exp.toolsUsed],
-              fix: hint, subSignatures: subSigs,
-            });
-            newPatterns.push({ id: pid, type: "workflow", desc, count });
-          }
-        }
-      }
-    }
-
-    if (exp.correction) {
-      const ck = preferencePatternId(exp.correction);
-      const existing = this.patterns.get(ck);
-      const tier = preferenceTierFromText(exp.correction, exp.toolsUsed);
-      if (!existing) {
-        newPatterns.push({ id: ck, type: "preference", desc: `User correction: ${exp.correction}` });
-      }
-      if (existing) {
-        existing.count += 1;
-        existing.lastSeen = exp.date;
-        existing.score += 3;
-        if (tier === "durable") existing.knowledgeTier = "durable";
-        else if (!existing.knowledgeTier) existing.knowledgeTier = "core";
-        existing.tools = [...new Set([...(existing.tools || []), ...(exp.toolsUsed || [])])];
-        if (!existing.context) existing.context = { taskType: exp.taskType || "general" };
-      } else {
-        this.patterns.set(ck, {
-          id: ck,
-          type: "preference",
-          knowledgeTier: tier,
-          status: "pending",
-          desc: `User correction: ${exp.correction}`,
-          count: 1,
-          firstSeen: exp.date,
-          lastSeen: exp.date,
-          score: 6,
-          tools: exp.toolsUsed || [],
-          context: { taskType: exp.taskType || "general" },
-          fix: exp.correction,
-        });
-      }
-    }
-
-    // Build knowledge-tree relations only when new patterns emerge
-    if (newPatterns.length > 0 || exp.correction) {
-      this._linkRelations(exp);
-    }
-
-    return newPatterns;
-  }
-
-  _linkRelations(exp) {
-    const activeCats = [...new Set((exp.toolsUsed || []).map(t => toolCategory(normalizeToolName(t))))].sort();
-    const activeTask = exp.taskType || "general";
-    if (activeCats.length < 2 && activeTask === "general") return;
-
-    // Find the IDs of patterns that were just created or updated in this ingest call
-    const targets = [];
-    if (activeCats.length >= 2) {
-      const catKey = activeCats.join("→");
-      targets.push(`workflow:${catKey}`);
-    }
-    if (exp.correction) {
-      targets.push(preferencePatternId(exp.correction));
-    }
-
-    for (const targetId of targets) {
-      const target = this.patterns.get(targetId);
-      if (!target) continue;
-      target.context = target.context || {};
-      const rels = target.context.relations || [];
-
-      for (const [id, stored] of this.patterns) {
-        if (id === targetId) continue;
-        if (stored.type === "capability" || stored.type === "host_capability") continue;
-
-        const storedCats = new Set(stored.context?.categories || []);
-        const catOverlap = activeCats.filter(c => storedCats.has(c)).length;
-        const storedTasks = String(stored.context?.taskType || "general").split(",").map((item) => item.trim());
-        const taskMatch = activeTask !== "general" && storedTasks.includes(activeTask);
-
-        let type = null, weight = 0;
-        if (catOverlap >= 3) { type = "strong-related"; weight = catOverlap * 1.0; }
-        else if (catOverlap >= 2) { type = "shared-tools"; weight = catOverlap * 0.5; }
-        else if (taskMatch) { type = "same-task"; weight = 0.3; }
-        else if (catOverlap >= 1 && exp.correction) { type = "co-occurred"; weight = 0.2; }
-        if (!type) continue;
-
-        const exists = rels.find(r => r.targetId === id);
-        if (exists) { exists.weight = Math.max(exists.weight, weight); }
-        else { rels.push({ targetId: id, type, weight }); }
-      }
-
-      if (rels.length > 8) rels.splice(0, rels.length - 8);
-      target.context.relations = rels;
-    }
-  }
-
-  ingestError(err) {
-    const ek = `error:${err.errorType}`;
-    const existing = this.patterns.get(ek);
-    const inc = Math.max(1, err.severity || 1);
-    const isNew = !existing;
-    if (existing) {
-      existing.count += 1;
-      existing.lastSeen = err.date;
-      existing.score += inc;
-      if (err.candidateSkill && !existing.fix) existing.fix = err.candidateSkill;
-      return { pattern: existing, isNew: false };
-    }
-    const pattern = {
-      id: ek,
-      type: "error",
-      status: "pending",
-      desc: `Repeated error: ${err.errorType} - ${err.errorDesc}`,
-      count: 1,
-      firstSeen: err.date,
-      lastSeen: err.date,
-      score: inc,
-      tools: err.tool ? [err.tool] : [],
-      fix: err.candidateSkill || "Check this failure mode before retrying the same action.",
-    };
-    this.patterns.set(ek, pattern);
-    return { pattern, isNew: true };
-  }
-
-  ingestUsage(entry = {}) {
-    const patterns = [];
-    const now = entry.date || new Date().toISOString();
-    const model = stableKey(entry.model);
-    const operation = stableKey(entry.operation || entry.subsystem);
-    const totalTokens = Number(entry.totalTokens || 0);
-    const threshold = Number(this.config?.largeUsageTokenThreshold || DEFAULT_CONFIG.largeUsageTokenThreshold);
-
-    if (totalTokens >= threshold) {
-      patterns.push({
-        id: `usage:large_context:${model}`,
-        type: "usage",
-        desc: `Large context usage on ${entry.model}: ${totalTokens} tokens`,
-        fix: `Before using ${entry.model} for similar work, search prior context and compact inputs; split large jobs when possible.`,
-        score: Math.max(4, Math.min(20, Math.round(totalTokens / Math.max(1, threshold)) * 4)),
-        context: { taskType: "usage", model: entry.model, operation: entry.operation, subsystem: entry.subsystem },
-      });
-    }
-
-    if (isUsageFailure(entry)) {
-      patterns.push({
-        id: `usage:failed_request:${model}:${operation}`,
-        type: "usage",
-        desc: `Model request failure on ${entry.model}/${entry.operation || entry.subsystem || "unknown"}`,
-        fix: entry.error
-          ? `This request path has failed before: ${entry.error}. Check provider health, auth, and request size before retrying.`
-          : "This request path has failed before. Check provider health, auth, and request size before retrying.",
-        score: 3,
-        context: { taskType: "usage", model: entry.model, operation: entry.operation, subsystem: entry.subsystem },
-      });
-    }
-
-    const changed = [];
-    for (const pattern of patterns) {
-      const existing = this.patterns.get(pattern.id);
-      if (existing) {
-        existing.count += 1;
-        existing.lastSeen = now;
-        existing.score = Math.max(existing.score || 0, 0) + pattern.score;
-        existing.desc = pattern.desc;
-        existing.fix = pattern.fix;
-        existing.context = { ...(existing.context || {}), ...(pattern.context || {}) };
-        changed.push({ pattern: existing, isNew: false });
-      } else {
-        const next = {
-          ...pattern,
-          status: "pending",
-          count: 1,
-          firstSeen: now,
-          lastSeen: now,
-        };
-        this.patterns.set(pattern.id, next);
-        changed.push({ pattern: next, isNew: true });
-      }
-    }
-    return changed;
-  }
-  ingestCapabilitySnapshot() {}
-
-  pruneMemory() {
-    if (this.patterns.size <= MAX_PATTERN_COUNT * 2) return 0;
-    // Keep approved, durable, and high-strength patterns; drop weakest
-    const entries = [...this.patterns.entries()].map(([id, p]) => ({
-      id,
-      keep: p.status === "approved" || knowledgeTier(p) === "durable",
-      strength: memoryStrength(p, this.config),
-    }));
-    entries.sort((a, b) => {
-      if (a.keep !== b.keep) return a.keep ? -1 : 1;
-      return b.strength - a.strength;
-    });
-    const limit = MAX_PATTERN_COUNT * 2;
-    let pruned = 0;
-    for (let i = limit; i < entries.length; i++) {
-      if (!entries[i].keep) {
-        this.patterns.delete(entries[i].id);
-        pruned += 1;
-      }
-    }
-    return pruned;
-  }
-
-  all() {
-    return [...this.patterns.values()]
-      .filter(pattern => {
-        // Skip old single-tool workflow chains (pre-category migration)
-        if (pattern.type === "workflow" && Array.isArray(pattern.tools) && pattern.tools.length >= 2) {
-          if (new Set(pattern.tools).size === 1) return false;
-        }
-        // Skip generic noise
-        if (knowledgeTier(pattern) === "ephemeral") return false;
-        return true;
-      })
-      .map((pattern) => ({
-        ...pattern,
-        knowledgeTier: knowledgeTier(pattern),
-        status: patternStatus(pattern),
-        decayedScore: Number(decayedScore(pattern, this.config).toFixed(2)),
-        injectable: isInjectable(pattern, this.config),
-      }))
-      .sort((a, b) => (b.decayedScore || 0) - (a.decayedScore || 0));
-  }
-
-  highConfidence() {
-    return this.all().filter((p) => p.injectable).slice(0, 8);
-  }
-
-  prefs() {
-    return this.all().filter((p) => p.type === "preference" && p.fix && p.injectable).slice(0, 8);
-  }
-}
-
 /* ── Plugin lifecycle ── */
 
 export default definePlugin({
@@ -696,9 +277,12 @@ export default definePlugin({
     ensureDir();
 
     let config = loadConfig();
-    // Capped dedup set — evicts oldest entries when full
+    // Capped dedup set — evicts oldest entries when full. Persisted to disk so
+    // that the startup usage bootstrap (which re-fetches the last 7 days) does
+    // not re-count requests already summed into usage_summary.json on a prior
+    // run — otherwise totalRequests/totalTokens inflate on every restart.
     const SEEN_IDS_CAP = 5000;
-    const seenRequestIds = new Set();
+    const seenRequestIds = new Set(readJson(USAGE_SEEN_FILE, []).slice(-SEEN_IDS_CAP));
     const _seenIdsEvict = () => {
       if (seenRequestIds.size <= SEEN_IDS_CAP) return;
       const iter = seenRequestIds.values();
@@ -706,6 +290,19 @@ export default definePlugin({
       const toRemove = Math.ceil(SEEN_IDS_CAP * 0.2);
       for (let i = 0; i < toRemove; i++) seenRequestIds.delete(iter.next().value);
     };
+    let _seenIdsDirty = false;
+    let _seenIdsFlushedAt = 0;
+    const persistSeenIds = (force = false) => {
+      if (!_seenIdsDirty) return;
+      // Throttle: at most once per 10s during a session; force on unload.
+      if (!force && Date.now() - _seenIdsFlushedAt < 10_000) return;
+      try {
+        writeJson(USAGE_SEEN_FILE, [...seenRequestIds]);
+        _seenIdsDirty = false;
+        _seenIdsFlushedAt = Date.now();
+      } catch {}
+    };
+    runtimeState.persistSeenIds = () => persistSeenIds(true);
     const detector = new PatternDetector(config);
 
     // One-time migration: mark legacy preferences as durable knowledge.
@@ -731,8 +328,14 @@ export default definePlugin({
 
     // Sync disk status into in-memory detector (control.js may approve/reject)
     // Called once per flush cycle instead of on every persist.
+    // Uses mtime cache: only re-reads patterns.json when it was modified by control.js.
+    let _patternsMtime = 0;
     const syncDiskStatus = () => {
       try {
+        if (!fs.existsSync(PATTERNS_FILE)) return;
+        const mtime = fs.statSync(PATTERNS_FILE).mtimeMs;
+        if (mtime === _patternsMtime) return; // no change, skip
+        _patternsMtime = mtime;
         const disk = readJson(PATTERNS_FILE, []);
         if (!disk.length) return;
         for (const p of disk) {
@@ -747,12 +350,41 @@ export default definePlugin({
       } catch {}
     };
 
-    const persistPatterns = () => {
+    const persistPatternsNow = () => {
+      // Absorb any review status written by control.js (a separate process)
+      // before we overwrite the file, so a fresh approve/reject is never lost.
+      // mtime-guarded, so this is a no-op when nothing changed.
+      syncDiskStatus();
       const mem = [...detector.patterns.values()].map(p => ({ ...p }));
       // Atomic write via temp file + rename
-      const tmpFile = `${PATTERNS_FILE}.${Date.now()}.tmp`;
-      fs.writeFileSync(tmpFile, JSON.stringify(mem, null, 2), "utf-8");
-      fs.renameSync(tmpFile, PATTERNS_FILE);
+      const tmpFile = `${PATTERNS_FILE}.${process.pid}.${Date.now()}.tmp`;
+      try {
+        fs.writeFileSync(tmpFile, JSON.stringify(mem, null, 2), "utf-8");
+        fs.renameSync(tmpFile, PATTERNS_FILE);
+        // Record our own write's mtime so syncDiskStatus doesn't re-read it back.
+        try { _patternsMtime = fs.statSync(PATTERNS_FILE).mtimeMs; } catch {}
+      } catch (err) {
+        try { fs.rmSync(tmpFile, { force: true }); } catch {}
+        throw err;
+      }
+    };
+
+    // Debounced persist: coalesce the many flush/usage writes in a busy session
+    // into at most one disk write per ~1.5s. onunload force-flushes via
+    // runtimeState.persistPatterns so nothing is lost on shutdown.
+    let _persistTimer = null;
+    const persistPatterns = () => {
+      if (_persistTimer) return;
+      _persistTimer = setTimeout(() => {
+        _persistTimer = null;
+        try { persistPatternsNow(); }
+        catch (err) { ctx.log.warn(`runtime-learner: persist failed: ${err.message}`); }
+      }, 1500);
+      _persistTimer.unref?.();
+    };
+    const flushPersist = () => {
+      if (_persistTimer) { clearTimeout(_persistTimer); _persistTimer = null; }
+      persistPatternsNow();
     };
 
     const snapshotSkill = (skillPath) => {
@@ -775,15 +407,22 @@ export default definePlugin({
       return true;
     };
 
-    const sendSessionMessage = async (sessionPath, text) => {
+    const sendSessionMessage = async (sessionPath, text, retries = 3) => {
       if (!sessionPath || !text || !canSendSessionMessage()) return false;
-      try {
-        await ctx.bus.request("session:send", { sessionPath, text });
-        return true;
-      } catch (err) {
-        ctx.log.debug?.(`runtime-learner: session message skipped: ${err.message}`);
-        return false;
+      for (let i = 0; i < retries; i++) {
+        try {
+          await ctx.bus.request("session:send", { sessionPath, text });
+          return true;
+        } catch (err) {
+          if (err.message === "session_busy" && i < retries - 1) {
+            await new Promise(r => setTimeout(r, 2000));
+            continue;
+          }
+          ctx.log.warn?.(`runtime-learner: session message failed: ${err.message}`);
+          return false;
+        }
       }
+      return false;
     };
 
     const formatProposalNotification = (proposal) => [
@@ -798,35 +437,44 @@ export default definePlugin({
       "说明：code_patch 不会由插件自动写入代码，应用它表示让我按提案修改文件、测试并安装。",
     ].join("\n");
 
-    const notifyProposalReview = async (sessionPath, proposals = []) => {
+    const notifyProposalReview = async (sessionPath, proposals = [], { cooldownMs = 2 * 60 * 60_000 } = {}) => {
       if (!config.proposalChatNotificationsEnabled || !sessionPath || proposals.length === 0) return;
+      const now = Date.now();
       for (const proposal of proposals) {
-        if (!proposal?.id || runtimeState.proposalNotifiedIds.has(proposal.id)) continue;
+        if (!proposal?.id) continue;
+        const lastNotified = runtimeState.proposalNotifiedIds.get(proposal.id) || 0;
+        if (now - lastNotified < cooldownMs) continue;
         const sent = await sendSessionMessage(sessionPath, formatProposalNotification(proposal));
-        if (sent) runtimeState.proposalNotifiedIds.add(proposal.id);
+        if (sent) {
+          runtimeState.proposalNotifiedIds.set(proposal.id, now);
+        } else {
+          ctx.log.warn(`runtime-learner: proposal notification NOT sent for ${proposal.id} (sessionPath=${sessionPath}, canSend=${canSendSessionMessage()})`);
+        }
       }
     };
 
     const maybeProposeCodeImprovements = (patterns, sessionPath = null) => {
       if (!patterns) patterns = detector.all();
       let created = 0;
-      const createdProposals = [];
+      const toNotify = [];
       for (const pattern of patterns) {
         if (!["error", "usage"].includes(pattern.type)) continue;
         if ((pattern.count || 0) < CODE_PROPOSAL_MIN_COUNT) continue;
         const proposal = buildCodePatchProposal({ learnerDir: DATA_DIR, pattern });
-        if (proposal.status === "pending" && proposal.createdAt === proposal.updatedAt) {
-          created += 1;
-          createdProposals.push(proposal);
+        if (proposal.status === "pending") {
+          if (proposal.createdAt === proposal.updatedAt) created += 1;
+          toNotify.push(proposal);
         }
       }
-      if (created > 0) {
-        logActivity({
-          type: "proposal_created",
-          summary: `Created ${created} high-risk code improvement proposal(s) for review`,
-          sessionPath,
-        });
-        void notifyProposalReview(sessionPath, createdProposals);
+      if (toNotify.length > 0) {
+        if (created > 0) {
+          logActivity({
+            type: "proposal_created",
+            summary: `Created ${created} high-risk code improvement proposal(s) for review`,
+            sessionPath,
+          });
+        }
+        void notifyProposalReview(sessionPath, toNotify);
       }
       return created;
     };
@@ -904,12 +552,17 @@ export default definePlugin({
             });
             runtimeState.sessionActivityCount += 1;
             ctx.log.info(`runtime-learner: model advisor generated ${count} suggestions`);
-            // Merge advisor insights back into patterns — replaces raw user text with distilled knowledge
+            // Merge advisor insights back into patterns — replaces raw user
+            // text with distilled knowledge. The advice comes from an external
+            // model and is injected into SKILL.md, so sanitize it and never let
+            // it override a fix the user explicitly approved.
             let merged = 0;
             for (const s of result.advice.suggestions) {
               const stored = detector.patterns.get(s.patternId);
-              if (stored && s.advice && s.advice !== stored.fix) {
-                stored.fix = s.advice;
+              if (!stored || stored.status === "approved") continue;
+              const advice = sanitizeAdvice(s.advice);
+              if (advice && advice !== stored.fix) {
+                stored.fix = advice;
                 stored.advisorUpdatedAt = new Date().toISOString();
                 merged += 1;
               }
@@ -947,70 +600,9 @@ export default definePlugin({
     } catch (err) {
       ctx.log.warn(`runtime-learner: capability snapshot skipped: ${err.message}`);
     }
-
-    // Update token display in settings (called at startup and after each usage record)
-    let _lastTokenDisplayUpdate = 0;
-    const TOKEN_DISPLAY_THROTTLE_MS = 30_000;
-    const updateTokenDisplay = (force = false) => {
-      const now = Date.now();
-      if (!force && now - _lastTokenDisplayUpdate < TOKEN_DISPLAY_THROTTLE_MS) return;
-      _lastTokenDisplayUpdate = now;
-      try {
-        const patterns = detector.all();
-        const injectable = patterns.filter((p) => p.injectable).length;
-        const pending = patterns.filter((p) => p.status === "pending").length;
-        const approved = patterns.filter((p) => p.status === "approved").length;
-
-        // Runtime stats
-        const expCount = countJsonl(EXPERIENCE_LOG);
-        const errCount = countJsonl(ERROR_LOG);
-        const actCount = countJsonl(ACTIVITY_LOG);
-        const runtime = `跟踪 ${expCount} 轮对话 · ${patterns.length} 个模式 (${injectable} 可注入) · ${errCount} 个错误 · ${actCount} 条活动记录`;
-
-        // Pattern details
-        const byType = {};
-        for (const p of patterns) byType[p.type] = (byType[p.type] || 0) + 1;
-        const typeLines = Object.entries(byType).map(([t, c]) => `${t}: ${c}`).join('  |  ');
-        const detail = `模式分布: ${typeLines || '无'}  |  待审核: ${pending}  |  已批准: ${approved}  |  本轮新增: ${runtimeState.sessionActivityCount}`;
-
-        // Recently learned: show distilled knowledge (fix), not raw corrections
-        let recentLearn = '暂无';
-        try {
-          const meaningful = patterns
-            .filter(p => p.status !== 'rejected')
-            .sort((a, b) => (b.decayedScore || 0) - (a.decayedScore || 0))
-            .slice(0, 5);
-          if (meaningful.length) {
-            recentLearn = meaningful.map(p => {
-              const icon = p.type === 'preference' ? '💬' : p.type === 'error' ? '⚠️' : '🔄';
-          // Prefer advisor-distilled fix over raw desc; strip "User correction:" prefix from bare fixes
-            const text = (p.fix && !p.fix.startsWith('User correction:')) ? p.fix
-              : p.desc.replace(/^User correction: /, '');
-              return `${icon} ${text.slice(0, 80)}`;
-            }).join('\n');
-          }
-        } catch {}
-
-        // Model advisor status
-        const advice = readModelAdvice();
-        const adviceState = readJson(path.join(DATA_DIR, "model_advice_state.json"), {});
-        let advisorText = '未运行过';
-        if (config.modelAdvisorSource === 'off') {
-          advisorText = '已关闭';
-        } else if (advice?.updatedAt) {
-          const lastRun = new Date(advice.updatedAt).toLocaleString('zh-CN');
-          const sCount = advice.suggestions?.length || 0;
-          advisorText = `上次: ${lastRun}  ·  模型: ${advice.model || config.modelAdvisorModel || 'deepseek-v4-flash'}  ·  建议: ${sCount} 条`;
-        } else if (adviceState?.lastRunAt) {
-          const lastRun = new Date(adviceState.lastRunAt).toLocaleString('zh-CN');
-          advisorText = `上次: ${lastRun}  ·  无新建议（模式暂无需整理）`;
-        } else if (config.modelAdvisorEnabled) {
-          advisorText = '已就绪，等待首次运行';
-        }
-
-        const updates = { tokenUsageSummary: runtime, learningStatsDetail: detail, modelAdvisorUsage: advisorText, recentLearnings: recentLearn, dataDirPath: DATA_DIR };
-        try { ctx.config?.update?.(updates); } catch { try { for (const [k, v] of Object.entries(updates)) { try { ctx.config?.set?.(k, v); } catch {} } } catch {} }
-      } catch {}
+    // Data directory display in settings (set once at startup)
+    const updateDataDirDisplay = () => {
+      try { ctx.config?.update?.({ dataDirPath: DATA_DIR }); } catch {}
     };
 
     // ── Auto-approve: shared logic for all three call sites ──
@@ -1051,10 +643,11 @@ export default definePlugin({
       const summaryEntry = summarizeUsageEntry(entry, sessionPath);
       const dedupKey = summaryEntry.requestId;
       if (dedupKey && seenRequestIds.has(dedupKey)) return;
-      if (dedupKey) { seenRequestIds.add(dedupKey); _seenIdsEvict(); }
+      if (dedupKey) { seenRequestIds.add(dedupKey); _seenIdsEvict(); _seenIdsDirty = true; }
       try {
         updateUsageSummary(summaryEntry);
-        updateTokenDisplay();
+        persistSeenIds();
+        updateDataDirDisplay();
         const usageChanges = detector.ingestUsage?.(summaryEntry) || [];
         for (const change of usageChanges) {
           if (!change.isNew) continue;
@@ -1081,384 +674,42 @@ export default definePlugin({
         const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
         const result = await ctx.bus.request("usage:list", { since, limit: 50 });
         for (const entry of result?.entries || []) recordUsage(entry, entry.attribution?.sessionPath || null);
+        persistSeenIds(true); // flush now so a hard kill won't re-count on next start
         ctx.log.info(`runtime-learner: bootstrapped ${result?.entries?.length || 0} usage records`);
       }
     } catch (err) {
       ctx.log.warn(`runtime-learner: usage bootstrap skipped: ${err.message}`);
     }
 
-    // ── Turn helpers (defined before flushTurn which references them) ──
+    // ── Observer setup (extracted to lib/observer.js) ──
 
-    const resultStatus = (turn, stopReason) => {
-      if (turn.errors.length > 0) return "partial";
-      if (stopReason && stopReason !== "stop") return "partial";
-      return "success";
-    };
+    const configRef = { current: config };
 
-    const extractToolError = (event) => {
-      const raw = event?.error || event?.result?.error || event?.result?.message || event?.message;
-      const msg = typeof raw === "string" ? raw : raw?.message || "";
-      const tool = normalizeToolName(event?.toolName || event?.name) || "tool";
-      return msg ? `${tool}: ${safeText(msg)}` : `${tool}: failed`;
-    };
-
-    const messageText = (message) => {
-      if (!message) return "";
-      if (typeof message.content === "string") return safeText(message.content, 1000);
-      if (typeof message.text === "string") return safeText(message.text, 1000);
-      if (Array.isArray(message.content)) {
-        return safeText(message.content.map((part) => part?.text || part?.content || "").join(" "), 1000);
-      }
-      return "";
-    };
-
-    const extractAssistantText = (event) => {
-      return messageText(event?.message);
-    };
-
-    const extractCorrectionFromUserText = (text) => {
-      const clean = safeText(text, 300);
-      if (!clean) return "";
-      // Tier 1: any strong signal is sufficient
-      if (CORRECTION_STRONG.some((p) => p.test(clean))) return clean;
-      // Tier 2: need ≥2 weak signals co-occurring
-      const weakHits = CORRECTION_WEAK.filter((p) => p.test(clean)).length;
-      if (weakHits >= 2) return clean;
-      return "";
-    };
-
-    // ── Turn lifecycle ──
-
-    const getTurn = (sessionPath) => {
-      const key = sessionPath || "unknown";
-      let turn = sessions.get(key);
-      if (!turn) {
-        turn = new SessionTurn(key);
-        sessions.set(key, turn);
-      }
-      if (sessions.size > MAX_SESSIONS) {
-        const oldest = [...sessions.entries()].sort((a, b) => a[1].lastTouched - b[1].lastTouched)[0];
-        if (oldest) sessions.delete(oldest[0]);
-      }
-      return turn;
-    };
-
-    const flushTurn = (sessionPath, event = {}) => {
-      const key = sessionPath || "unknown";
-      const turn = sessions.get(key);
-      if (!turn) return;
-
-      const stopReason = event?.message?.stopReason ?? turn.stopReason ?? null;
-      const finalError = safeText(event?.message?.errorMessage || event?.message?.error?.message || event?.error);
-      if (finalError) turn.addError(finalError);
-      turn.assistantText = extractAssistantText(event) || turn.assistantText;
-      turn.stopReason = stopReason;
-
-      if (turn.tools.length === 0 && turn.errors.length === 0 && !turn.assistantText) {
-        sessions.delete(key);
-        return;
-      }
-
-      const correction = turn.userTexts.map(extractCorrectionFromUserText).find(Boolean) || "";
-      const tools = [...turn.tools];
-      const date = new Date().toISOString();
-      const taskId = `${path.basename(key)}:${Date.now()}`;
-      const exp = {
-        date,
-        taskId,
-        sessionPath: key,
-        taskType: classifyTask(tools),
-        project: "general",
-        userIntent: turn.userTexts.at(-1) || "",
-        taskSummary: tools.length ? `tools: ${tools.join(" -> ")}` : "assistant turn without tool use",
-        toolsUsed: tools,
-        toolCallCount: turn.toolCallCount,
-        resultStatus: resultStatus(turn, stopReason),
-        stopReason,
-        userFeedback: correction ? "correction" : "unknown",
-        userExplicitCorrection: !!correction,
-        errorType: turn.errors.length ? classifyError(turn.errors[0]) : "none",
-        failurePoint: turn.errors.length ? turn.errors[0] : "none",
-        correction,
-        impactLevel: turn.errors.length ? 2 : 1,
-        repeatability: tools.length >= 2 ? "medium" : "low",
-        oneOff: false,
-        skillCandidate: false,
-        suggestedSkill: null,
-        notes: "",
-      };
-
-      try {
-        appendJsonl(TURNS_FILE, { date, sessionPath: key, tools, errors: turn.errors, stopReason, correction });
-        appendJsonl(EXPERIENCE_LOG, exp);
-      } catch (err) {
-        ctx.log.warn(`runtime-learner: write experience failed: ${err.message}`);
-      }
-
-      for (const errMsg of turn.errors) {
-        const ee = {
-          date,
-          taskId,
-          sessionPath: key,
-          taskType: exp.taskType,
-          errorType: classifyError(errMsg),
-          errorDesc: safeText(errMsg, 200),
-          severity: stopReason === "error" ? 4 : 2,
-          tool: tools.at(-1) || null,
-        };
-        try {
-          appendJsonl(ERROR_LOG, ee);
-          const { isNew } = detector.ingestError(ee);
-          if (isNew) {
-            logActivity({
-              type: "error_discovered",
-              summary: `New error pattern: ${ee.errorType} — ${ee.errorDesc}`,
-              sessionPath: key,
-            });
-            runtimeState.sessionActivityCount += 1;
-          }
-        } catch (err) {
-          ctx.log.warn(`runtime-learner: write error failed: ${err.message}`);
-        }
-      }
-
-      const newPatterns = detector.ingest(exp);
-
-      // Positive feedback: successful turn without correction → boost involved workflow
-      if (exp.resultStatus === "success" && !correction && tools.length >= 2) {
-        const cats = tools.map(t => toolCategory(normalizeToolName(t)));
-        const uniqueCats = [...new Set(cats)].sort();
-        if (uniqueCats.length >= 2) {
-          const wfId = `workflow:${uniqueCats.join("→")}`;
-          const wf = detector.patterns.get(wfId);
-          if (wf) {
-            wf.score = (wf.score || 0) + 1; // small implicit boost
-            wf.lastSuccessAt = date;
-            wf.successCount = (wf.successCount || 0) + 1;
-          }
-        }
-      }
-
-      for (const np of newPatterns) {
-        logActivity({
-          type: "pattern_discovered",
-          summary: `New ${np.type} pattern: ${np.desc}`,
-          sessionPath: key,
-        });
-        runtimeState.sessionActivityCount += 1;
-        ctx.log.info(`runtime-learner: discovered ${np.type} pattern: ${np.desc}`);
-      }
-
-      // Record session-end activity summary when turning
-      if (newPatterns.length > 0 || correction) {
-        const parts = [];
-        if (newPatterns.length > 0) parts.push(`${newPatterns.length} new pattern(s) detected`);
-        if (correction) parts.push(`user correction captured`);
-        logActivity({
-          type: "turn_complete",
-          summary: `Turn completed: ${tools.join(" -> ") || "no tools"}${parts.length ? ` — ${parts.join(", ")}` : ""}`,
-          sessionPath: key,
-          detail: newPatterns.map((p) => p.desc).join("; ") || null,
-        });
-      }
-
-      try {
-        // Refresh config from disk: control.js set_config may have updated it
-        config = { ...config, ...readJson(CONFIG_FILE, {}) };
-        detector.setConfig(config);
-        syncDiskStatus();
-        const { allPatterns } = autoApprovePatterns(key);
-        detector.pruneMemory();
-        persistPatterns();
-        pruneDataFiles().catch(() => {});
-        refreshSkill(false, key, allPatterns);
-        maybeRunModelAdvisor("turn", key, allPatterns).catch(() => {});
-      } catch (err) {
-        ctx.log.warn(`runtime-learner: refresh failed: ${err.message}`);
-      }
-
-      // ── Adoption check: did the Agent use a searched workflow? ──
-      const pending = runtimeState.pendingAdoptionChecks.get(key);
-      if (pending) {
-        pending.remaining -= 1;
-        let adopted = 0;
-        for (const s of pending.searches) {
-          if (s.tools.length === 0) continue;
-          const matchCount = s.tools.filter(t => tools.includes(t)).length;
-          if (matchCount >= Math.ceil(s.tools.length * 0.5)) {
-            const stored = detector.patterns.get(s.patternId);
-            if (stored) {
-              stored.score = (stored.score || 0) + 3;
-              stored.lastAdoptedAt = new Date().toISOString();
-              adopted += 1;
-              ctx.log.info(`runtime-learner: adopted workflow ${s.patternId}, score +3`);
-            }
-          }
-        }
-        if (adopted > 0) {
-          persistPatterns();
-          refreshSkill(true, key);
-        }
-        if (pending.remaining <= 0) runtimeState.pendingAdoptionChecks.delete(key);
-      }
-
-      sessions.delete(key);
-    };
-
-    // ── Tool-end semantic handlers: registered by tool name ──
-    const toolEndHandlers = new Map();
-
-    // Feed official pin_memory directly as a durable preference pattern
-    // (bypasses correction detection which would misclassify explicit user memory)
-    toolEndHandlers.set("pin_memory", (event, sessionPath) => {
-      try {
-        const args = event.args || event.input || {};
-        const content = typeof args.content === "string" ? args.content : JSON.stringify(args);
-        if (content && content.length < 500) {
-          const pid = preferencePatternId(content);
-          const now = new Date().toISOString();
-          const existing = detector.patterns.get(pid);
-          if (existing) {
-            existing.count = (existing.count || 1) + 1;
-            existing.score = Math.max(existing.score || 0, 10) + 2;
-            existing.lastSeen = now;
-          } else {
-            detector.patterns.set(pid, {
-              id: pid,
-              type: "preference",
-              knowledgeTier: "durable",
-              status: "approved",
-              desc: content,
-              fix: content,
-              count: 1,
-              score: 10,
-              firstSeen: now,
-              lastSeen: now,
-              context: { taskType: "general", categories: ["记忆操作"] },
-            });
-          }
-          persistPatterns();
-          refreshSkill(false, sessionPath);
-          ctx.log.info("runtime-learner: ingested pin_memory as durable preference");
-        }
-      } catch (err) {
-        ctx.log.warn(`runtime-learner: pin_memory ingestion skipped: ${err.message}`);
-      }
+    const observer = createObserver({
+      detector,
+      sessions,
+      runtimeState,
+      persistPatterns,
+      refreshSkill,
+      autoApprovePatterns,
+      syncDiskStatus,
+      pruneDataFiles,
+      maybeRunModelAdvisor,
+      appendJsonl,
+      logActivity,
+      recordUsage,
+      configRef,
+      ctx,
+      paths: { TURNS_FILE, EXPERIENCE_LOG, ERROR_LOG, CONFIG_FILE },
+      MAX_SESSIONS,
     });
 
-    // Feedback loop: track self_learning_search results for adoption scoring
-    toolEndHandlers.set("self_learning_search", (event, sessionPath) => {
-      try {
-        const raw = event.result;
-        if (typeof raw !== "string") return;
-        const parsed = JSON.parse(raw);
-        const results = parsed.results || [];
-        const ids = results.map(r => r.id).filter(Boolean);
-
-        // Immediate feedback: record exposure only. Score changes require later adoption.
-        if (ids.length > 0) {
-          let touched = 0;
-          for (const id of ids) {
-            const stored = detector.patterns.get(id);
-            if (stored) {
-              stored.lastSearchedAt = new Date().toISOString();
-              touched += 1;
-            }
-          }
-          if (touched > 0) {
-            persistPatterns();
-            ctx.log.info(`runtime-learner: search exposed ${touched} pattern(s)`);
-          }
-        }
-
-        // Deferred: track workflow patterns for adoption check (next 3 turns)
-        const wfResults = results.filter(r => r.type === "workflow" && r.id);
-        if (wfResults.length > 0 && sessionPath) {
-          const searches = wfResults.map(r => {
-            const stored = detector.patterns.get(r.id);
-            return { patternId: r.id, tools: stored?.tools || [] };
-          }).filter(s => s.tools.length > 0);
-          if (searches.length > 0) {
-            runtimeState.pendingAdoptionChecks.set(sessionPath, { searches, remaining: 3 });
-          }
-        }
-      } catch (err) {
-        ctx.log.warn(`runtime-learner: feedback loop skipped: ${err.message}`);
-      }
-    });
-
-    const unsubs = [];
-    try {
-      unsubs.push(ctx.bus.subscribe((event, sessionPath) => {
-        if (!event?.type) return;
-        const turn = getTurn(sessionPath);
-
-        if (event.type === "session_user_message") {
-          turn.addUserText(messageText(event.message));
-          return;
-        }
-
-        if (event.type === "user_message" || event.type === "message_start") {
-          if (event.message?.role === "user") turn.addUserText(messageText(event.message));
-          return;
-        }
-
-        if (event.type === "message_update") {
-          const sub = event.assistantMessageEvent;
-          if (sub?.type === "text_delta") {
-            turn.assistantText = safeText(`${turn.assistantText} ${sub.delta || ""}`, 1000);
-          }
-          return;
-        }
-
-        if (event.type === "tool_execution_start") {
-          turn.markToolStart(event.toolName || event.name);
-          return;
-        }
-
-        if (event.type === "tool_execution_end") {
-          turn.markToolEnd(event.toolName || event.name);
-          if (event.isError) { turn.addError(extractToolError(event)); return; }
-
-          const handler = toolEndHandlers.get(normalizeToolName(event.toolName || event.name));
-          if (handler) handler(event, sessionPath);
-          return;
-        }
-
-        if (event.type === "message_end" && event.message?.role === "assistant") {
-          flushTurn(sessionPath, event);
-          return;
-        }
-
-        if (event.type === "assistantMessageEvent") {
-          const ame = event.assistantMessageEvent || {};
-          if (ame.toolName) turn.addTool(ame.toolName);
-          if (ame.toolError) turn.addError(ame.toolError);
-          if (ame.type === "done" || ame.type === "complete") flushTurn(sessionPath, event);
-        }
-      }));
-    } catch (err) {
-      ctx.log.warn(`runtime-learner: EventBus subscribe failed: ${err.message}`);
-    }
-
-    try {
-      if (config.learnFromUsage && ctx.bus.subscribe) {
-        unsubs.push(ctx.bus.subscribe((event, sessionPath) => {
-          if (event?.type === "llm_usage" && event.entry) recordUsage(event.entry, sessionPath);
-        }, { types: ["llm_usage"] }));
-      }
-    } catch (err) {
-      ctx.log.warn(`runtime-learner: usage subscribe failed: ${err.message}`);
-    }
+    observer.subscribe(ctx.bus, config);
 
     runtimeState.detector = detector;
     runtimeState.sessions = sessions;
-    runtimeState.unsub = () => {
-      for (const unsub of unsubs) {
-        try { unsub?.(); } catch {}
-      }
-    };
-    runtimeState.persistPatterns = persistPatterns;
+    runtimeState.unsub = () => observer.unsubscribe();
+    runtimeState.persistPatterns = flushPersist;
     runtimeState.refreshSkill = refreshSkill;
 
     // Session startup activity entry
@@ -1470,7 +721,7 @@ export default definePlugin({
     try {
       syncDiskStatus();
       const { allPatterns } = autoApprovePatterns();
-      persistPatterns();
+      flushPersist();
       pruneDataFiles().catch(() => {});
       refreshSkill(true, null, allPatterns);
       maybeRunModelAdvisor("startup", null, allPatterns).catch(() => {});
@@ -1480,7 +731,7 @@ export default definePlugin({
 
     ctx.log.info("runtime-learner: started three-layer self-learning runtime");
 
-    updateTokenDisplay(true);
+    updateDataDirDisplay();
     } catch (err) {
       try { ctx.log.error(`runtime-learner: onload failed: ${err.message}`); } catch {}
     }
@@ -1494,6 +745,9 @@ export default definePlugin({
     });
 
     if (runtimeState.unsub) runtimeState.unsub();
+    if (runtimeState.persistSeenIds) {
+      try { runtimeState.persistSeenIds(); } catch {}
+    }
     if (runtimeState.detector && runtimeState.persistPatterns) {
       try { runtimeState.persistPatterns(); } catch {}
     }
@@ -1504,6 +758,7 @@ export default definePlugin({
     runtimeState.sessions = null;
     runtimeState.unsub = null;
     runtimeState.persistPatterns = null;
+    runtimeState.persistSeenIds = null;
     runtimeState.refreshSkill = null;
     runtimeState.statusNotifiedAt.clear();
     runtimeState.advisorSkipReasons.clear();

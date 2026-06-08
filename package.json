@@ -1,6 +1,6 @@
 {
   "name": "hanako-runtime-learner",
-  "version": "0.7.2",
+  "version": "0.7.6",
   "description": "Runtime self-learning engine for Hanako: observe local interaction patterns, learn repeated workflows and errors, inject conservative skill hints.",
   "author": "Sun",
   "license": "MIT",
@@ -8,6 +8,7 @@
   "files": [
     "LICENSE",
     "INSTALL.md",
+    "install.cjs",
     "manifest.json",
     "index.js",
     "lib/",
@@ -17,7 +18,7 @@
   ],
   "scripts": {
     "install-plugin": "node install.cjs",
-    "check": "node --check index.js && node --check lib/common.js && node --check lib/helpers.js && node --check lib/hana-runtime-compat.js && node --check lib/official-utility-model.js && node --check lib/model-advisor.js && node --check lib/official-memory-bridge.js && node --check lib/proposals.js && node --check lib/session-turn.js && node --check tools/stats.js && node --check tools/report.js && node --check tools/control.js && node --check tools/activity.js && node --check tools/open-dir.js && node --check tools/search.js",
-    "test": "node --test tests/common.test.js tests/proposals.test.js tests/official-memory-bridge.test.js"
+    "check": "node --check index.js && node --check lib/common.js && node --check lib/helpers.js && node --check lib/hana-runtime-compat.js && node --check lib/official-utility-model.js && node --check lib/model-advisor.js && node --check lib/official-memory-bridge.js && node --check lib/pattern-detector.js && node --check lib/observer.js && node --check lib/proposals.js && node --check lib/session-turn.js && node --check tools/stats.js && node --check tools/report.js && node --check tools/control.js && node --check tools/activity.js && node --check tools/open-dir.js && node --check tools/search.js",
+    "test": "node --test tests/common.test.js tests/proposals.test.js tests/official-memory-bridge.test.js tests/pattern-detector.test.js tests/flush-turn.test.js tests/observer.test.js tests/model-advisor.test.js"
   }
 }

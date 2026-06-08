@@ -70,13 +70,15 @@ function matchesTaskFilter(pattern, taskFilter) {
   return String(raw).split(",").map((item) => item.trim()).includes(taskFilter);
 }
 
-function relationBoost(pattern, allPatterns) {
-  // Use only explicit relation edges — no O(n²) category overlap scan
+function relationBoost(pattern, byId) {
+  // Use only explicit relation edges — no O(n²) category overlap scan. Targets
+  // are resolved via a prebuilt id→pattern Map (O(1)) rather than a linear scan
+  // per edge, so scoring stays O(candidates × edges) instead of × patterns.
   const rels = pattern.context?.relations || [];
   if (!rels.length) return 0;
   let boost = 0;
   for (const rel of rels) {
-    const target = allPatterns.find(p => p.id === rel.targetId);
+    const target = byId.get(rel.targetId);
     if (target && target.status !== "rejected") {
       boost += (rel.weight || 0.2) * Math.min(1, (target.score || 0) / 15);
     }
@@ -104,6 +106,7 @@ const tool = defineTool({
     const limit = Math.min(input.limit || 5, 10);
 
     const allPatterns = readJson(PATTERNS_FILE, []);
+      const byId = new Map(allPatterns.map(p => [p.id, p]));
       const config = readJson(CONFIG_FILE, DEFAULT_CONFIG);
       const tokens = tokenize(query);
       const officialMemory = config.officialMemoryBridgeEnabled
@@ -122,7 +125,7 @@ const tool = defineTool({
     const scored = candidates.map(p => {
       const tScore = textScore(p, tokens);
       const cScore = contextScore(p, tokens);
-      const rBoost = relationBoost(p, allPatterns);
+      const rBoost = relationBoost(p, byId);
       const memStr = memoryStrength(p, config);
       // Composite: text (×1.0) + context (×1.2) + relation boost + memory freshness
       const composite = tScore + cScore * 1.2 + rBoost + Math.log1p(memStr) * 0.5;
