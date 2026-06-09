@@ -4,7 +4,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.6.0-blue" alt="version">
+  <img src="https://img.shields.io/badge/version-1.6.1-blue" alt="version">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="license">
   <img src="https://img.shields.io/badge/platform-Hanako%20Agent%20v0.293%2B-orange" alt="platform">
   <img src="https://img.shields.io/badge/node-%E2%89%A518-brightgreen" alt="node">
@@ -17,7 +17,7 @@
 
 Hanako 插件。本地观察你的交互习惯——重复的工作流、反复触发的错误、明确的纠正——从中提取可复用的经验，自动注入到 Agent 的后续会话中。
 
-v1.6.0 在严格审核与事件回放之上增加治理策略配置档与本地审计包导出：`set_policy_profile` 可在 conservative / balanced / autonomous 三种模式间切换，`export_audit_bundle` 会生成脱敏 JSON + Markdown 审计报告，方便本地排查、合并前 review 或向其他 Agent 交接。
+v1.6.1 在 v1.6.0 策略配置档与审计包基础上完成系统审计修复：防御式解析、临时文件清理、API key 脱敏、并发优化、孤儿关系清理、噪音过滤与代码去重。
 
 ---
 
@@ -411,7 +411,7 @@ hanako-runtime-learner/
 │   ├── official-utility-model.js  # 小模型端点解析
 │   └── hana-runtime-compat.js  # Pi 框架兼容层
 ├── tools/                      # 7 个独立工具
-├── tests/                      # 235 项测试
+├── tests/                      # 241 项测试
 ├── skills/                     # SKILL.md 注入
 └── manifest.json
 ```
@@ -419,7 +419,7 @@ hanako-runtime-learner/
 ```powershell
 npm install
 npm run check   # 源文件语法检查
-npm test        # 128 项测试
+npm test        # 241 项测试
 ```
 
 ---

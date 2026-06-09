@@ -110,8 +110,14 @@ const tool = defineTool({
       try {
         history = fs.readdirSync(p.historyDir).filter((name) => name.endsWith("-SKILL.md")).sort();
       } catch {}
+      // Redact secrets in the config snapshot before returning it to the caller.
+      const safeConfig = { ...config };
+      const SENSITIVE_KEYS = new Set(["modelAdvisorApiKey", "semanticEmbeddingApiKey"]);
+      for (const k of Object.keys(safeConfig)) {
+        if (SENSITIVE_KEYS.has(k) && safeConfig[k]) safeConfig[k] = "***";
+      }
       return JSON.stringify({
-        config,
+        config: safeConfig,
         patterns: decorated.length,
         injectable: decorated.filter((x) => x.injectable).length,
         pending: decorated.filter((x) => x.status === "pending").length,

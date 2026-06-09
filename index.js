@@ -11,7 +11,7 @@
 
 import fs from "fs";
 import path from "path";
-import { DEFAULT_CONFIG, learnerDir, readJson, writeJson, describeOfficialUtilityModel, countJsonl, buildSkillMdFromPatterns } from "./lib/common.js";
+import { DEFAULT_CONFIG, learnerDir, readJson, writeJson, describeOfficialUtilityModel, countJsonl, buildSkillMdFromPatterns, cleanupTempFiles } from "./lib/common.js";
 import { definePlugin } from "./lib/hana-runtime-compat.js";
 import { readModelAdvice, runModelAdvisor } from "./lib/model-advisor.js";
 import { applyProposal, buildCodePatchProposal, buildSkillPatchProposal } from "./lib/proposals.js";
@@ -63,6 +63,8 @@ function ensureDir() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.mkdirSync(HISTORY_DIR, { recursive: true });
   fs.mkdirSync(path.join(DATA_DIR, "proposals"), { recursive: true });
+  // Clean up orphan .tmp files from crashed writeJson calls.
+  try { cleanupTempFiles(DATA_DIR); } catch {}
 }
 
 function appendJsonl(file, value) {
@@ -747,14 +749,12 @@ export default definePlugin({
           runtimeState.sessionActivityCount += 1;
         }
         autoApprovePatterns(sessionPath);
-        // Prune here too: usage-heavy / low-turn sessions would otherwise never
-        // hit the forgetting curve (only flushTurn used to call pruneMemory),
-        // letting patterns pile up to the hard cap. Recompute allPatterns after
-        // pruning so the skill/advisor never see just-pruned entries.
         detector.pruneMemory();
         const allPatterns = detector.all();
         persistPatterns();
-        pruneDataFiles().catch(() => {});
+        // pruneDataFiles is on a 5-minute throttle and called from flushTurn;
+        // calling it here too creates wasteful concurrent invocations during
+        // usage bootstrap (up to 50).
         refreshSkill(false, sessionPath, allPatterns);
         maybeRunModelAdvisor("usage", sessionPath, allPatterns).catch(() => {});
       } catch (err) {

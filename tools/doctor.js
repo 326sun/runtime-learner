@@ -8,6 +8,7 @@ import {
   knowledgeTier,
   ageDays,
   learnerDir as resolveLearnerDir,
+  estimateTokens,
 } from "../lib/common.js";
 import { defineTool } from "../lib/hana-runtime-compat.js";
 import { listProposals } from "../lib/proposals.js";
@@ -19,20 +20,6 @@ import { fingerprintPatterns, readMemFSIndex } from "../lib/memfs.js";
 
 const SEVERITY_PENALTY = { critical: 20, high: 15, warning: 8, info: 3 };
 const RETENTION_DAYS = 30;
-
-// CJK-aware token estimate (mirrors buildSkillMdFromPatterns in common.js): CJK
-// ~1.8 tok/char, other ~0.25 tok/char.
-function estimateTokens(text) {
-  let cjk = 0, other = 0;
-  for (const ch of String(text || "")) {
-    const cp = ch.codePointAt(0);
-    if ((cp >= 0x4e00 && cp <= 0x9fff) || (cp >= 0x3400 && cp <= 0x4dbf) ||
-        (cp >= 0x20000 && cp <= 0x2a6df) || (cp >= 0x3040 && cp <= 0x309f) ||
-        (cp >= 0x30a0 && cp <= 0x30ff) || (cp >= 0xac00 && cp <= 0xd7af)) cjk++;
-    else other++;
-  }
-  return Math.ceil(cjk * 1.8 + other * 0.25);
-}
 
 const norm = (s) => String(s || "").trim().toLowerCase().replace(/\s+/g, " ");
 

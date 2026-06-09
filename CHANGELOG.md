@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.6.1
+
+系统审计修复（8 项）：
+
+- **observer.js**：`self_learning_search` handler 改用防御式 JSON 解析（`typeof raw === "string" ? JSON.parse(raw) : raw`），避免工具端返回已解析对象时静默跳过 adoption 追踪。
+- **common.js + index.js**：新增 `cleanupTempFiles()`，启动时清理 `writeJson` crash 残留的 `*.tmp` 文件。
+- **control.js**：`status` action 输出时对 `modelAdvisorApiKey` / `semanticEmbeddingApiKey` 做脱敏（替换为 `***`）。
+- **index.js**：从 `recordUsage` 移除冗余的 `pruneDataFiles()` 调用，消除 usage bootstrap 阶段 50 次并发空跑。
+- **pattern-detector.js**：`_forgetPattern` 现在遍历所有剩余模式清理指向被删除 id 的孤儿关系边。
+- **pattern-detector.js**：workflow 检测增加 `!uniqueCats.every(c => c === "其他")` 过滤，排除纯未知工具类别噪音。
+- **observer.js**：`flushTurn` 中 userTexts 拼接改为 `slice(-8).join(" ").slice(0, 2000)`，限制长会话内存。
+- **common.js + validation-gate.js + doctor.js**：提取共享 `estimateTokens()` 到 `common.js`，消除三处重复的 CJK token 估算代码。
+
 ## 1.6.0
 
 策略配置档与本地审计包：
