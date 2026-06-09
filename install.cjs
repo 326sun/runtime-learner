@@ -113,7 +113,7 @@ if (fs.existsSync(PLUGIN_DEST)) {
 
 // ── Copy ──
 console.log("\n[3/4] Copy plugin...");
-const filesToCopy = ["manifest.json", "index.js", "package.json", "README.md", "INSTALL.md", "LICENSE"];
+const filesToCopy = ["manifest.json", "index.js", "package.json", "README.md", "ARCHITECTURE.md", "INSTALL.md", "LICENSE"];
 const dirsToCopy = ["tools", "skills", "lib"];
 
 fs.mkdirSync(PLUGIN_DEST, { recursive: true });
@@ -127,7 +127,7 @@ console.log(`  Installed to ${PLUGIN_DEST}`);
 
 // ── Verify deployed files ──
 console.log("\n[4/4] Verify...");
-const checks = [...JS_FILES, "manifest.json", "package.json", "README.md", "INSTALL.md", "LICENSE", "skills/self-learning/SKILL.md"];
+const checks = [...JS_FILES, "manifest.json", "package.json", "README.md", "ARCHITECTURE.md", "INSTALL.md", "LICENSE", "skills/self-learning/SKILL.md"];
 let ok = true;
 for (const check of checks) {
   if (fs.existsSync(path.join(PLUGIN_DEST, check))) {

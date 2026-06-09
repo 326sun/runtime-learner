@@ -76,6 +76,18 @@ function relationBoost(pattern, byId) {
  * retrieval eval) can drive it directly with in-memory patterns:
  *   tokens → BM25 top-K → memory-gate → relation+strength rerank → low-conf reject
  */
+/**
+ * Core retrieval pipeline. Stateless and testable without disk I/O.
+ *
+ * Pipeline: CJK tokenize + synonym expand → BM25 Top-K → memory-gate
+ * (hard reject + soft penalty) → relation + memoryStrength + scope rerank
+ * → low-confidence tail reject → optional RRF semantic fusion.
+ *
+ * @param {Array} allPatterns — decorated patterns + fact memory items
+ * @param {string} query — search keywords
+ * @param {object} opts — { config, type, taskType, project, limit, semantic }
+ * @returns {{ results: Array, queryScope: object }}
+ */
 export function runSearch(allPatterns, query, { config = DEFAULT_CONFIG, type = null, taskType = null, project = null, limit = 5, semantic = null } = {}) {
   const cfg = { ...DEFAULT_CONFIG, ...config };
   const byId = new Map(allPatterns.map((p) => [p.id, p]));
