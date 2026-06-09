@@ -15,18 +15,17 @@ import { DEFAULT_CONFIG, learnerDir, readJson, writeJson, describeOfficialUtilit
 import { definePlugin } from "./lib/hana-runtime-compat.js";
 import { readModelAdvice, runModelAdvisor } from "./lib/model-advisor.js";
 import { applyProposal, buildCodePatchProposal, buildSkillPatchProposal } from "./lib/proposals.js";
-import { normalizeToolName, safeText, toolCategory, shortHash, preferencePatternId, stableKey, isUsageFailure, TASK_SIGS, ERR_PATTERNS, CORRECTION_STRONG, CORRECTION_WEAK, classifyTask, classifyError, extractCorrectionFromUserText, sanitizeAdvice } from "./lib/helpers.js";
+import { usageModelKey, usageTotalTokens, summarizeUsageEntry, updateUsageSummary, snapshotHostCapabilities, USAGE_SUMMARY_FILE } from "./lib/usage-pipeline.js";
+import { normalizeToolName, safeText, toolCategory, shortHash, preferencePatternId, stableKey, isUsageFailure, TASK_SIGS, ERR_PATTERNS, CORRECTION_STRONG, CORRECTION_WEAK, classifyTask, classifyError, extractCorrectionFromUserText, sanitizeAdvice, usageDedupKey, normalizeSeenIds } from "./lib/helpers.js";
 import { SessionTurn } from "./lib/session-turn.js";
 import { PatternDetector } from "./lib/pattern-detector.js";
 import { createObserver } from "./lib/observer.js";
-import { usageDedupKey, normalizeSeenIds } from "./lib/usage.js";
 import { snapshotSkill, pruneSkillBackups } from "./lib/skill-lifecycle.js";
 import { isProposalReviewApproved } from "./lib/review-queue.js";
 
 const DATA_DIR = learnerDir();
 const EXPERIENCE_LOG = path.join(DATA_DIR, "experience_log.jsonl");
 const ERROR_LOG = path.join(DATA_DIR, "error_log.jsonl");
-const USAGE_SUMMARY_FILE = path.join(DATA_DIR, "usage_summary.json");
 const USAGE_SEEN_FILE = path.join(DATA_DIR, "usage_seen.json");
 const CAPABILITIES_FILE = path.join(DATA_DIR, "host_capabilities.json");
 const PATTERNS_FILE = path.join(DATA_DIR, "patterns.json");
@@ -80,84 +79,6 @@ function loadConfig() {
   } catch {}
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(DEFAULT_CONFIG, null, 2), "utf-8");
   return { ...DEFAULT_CONFIG };
-}
-
-function usageModelKey(entry = {}) {
-  const provider = entry.model?.provider || "unknown";
-  const modelId = entry.model?.modelId || "unknown";
-  return `${provider}/${modelId}`;
-}
-
-function usageTotalTokens(entry = {}) {
-  const total = entry.usage?.totalTokens;
-  if (Number.isFinite(total)) return total;
-  const input = entry.usage?.input?.totalTokens;
-  const output = entry.usage?.output?.totalTokens;
-  return (Number.isFinite(input) ? input : 0) + (Number.isFinite(output) ? output : 0);
-}
-
-function summarizeUsageEntry(entry = {}, sessionPath = null) {
-  return {
-    date: entry.endedAt || entry.startedAt || new Date().toISOString(),
-    requestId: entry.requestId || null,
-    status: entry.status || "unknown",
-    model: usageModelKey(entry),
-    subsystem: entry.source?.subsystem || "unknown",
-    operation: entry.source?.operation || "unknown",
-    trigger: entry.source?.trigger || "unknown",
-    sessionPath: sessionPath || entry.attribution?.sessionPath || entry.source?.actor?.sessionPath || null,
-    totalTokens: usageTotalTokens(entry),
-    inputTokens: entry.usage?.input?.totalTokens ?? null,
-    outputTokens: entry.usage?.output?.totalTokens ?? null,
-    reasoningTokens: entry.usage?.output?.reasoningTokens ?? null,
-    cacheHitRatio: entry.usage?.cache?.hitRatio ?? null,
-    costTotal: entry.usage?.costTotal ?? null,
-    error: entry.error?.message ? safeText(entry.error.message, 200) : null,
-  };
-}
-
-function updateUsageSummary(summaryEntry) {
-  const summary = readJson(USAGE_SUMMARY_FILE, {
-    totalRequests: 0,
-    status: {},
-    byModel: {},
-    bySubsystem: {},
-    totalTokens: 0,
-    costTotal: 0,
-    lastSeenAt: null,
-    recent: [],
-  });
-
-  summary.totalRequests += 1;
-  summary.status[summaryEntry.status] = (summary.status[summaryEntry.status] || 0) + 1;
-  summary.byModel[summaryEntry.model] = summary.byModel[summaryEntry.model] || { requests: 0, totalTokens: 0, costTotal: 0 };
-  summary.byModel[summaryEntry.model].requests += 1;
-  summary.byModel[summaryEntry.model].totalTokens += summaryEntry.totalTokens || 0;
-  summary.byModel[summaryEntry.model].costTotal += summaryEntry.costTotal || 0;
-  summary.bySubsystem[summaryEntry.subsystem] = (summary.bySubsystem[summaryEntry.subsystem] || 0) + 1;
-  summary.totalTokens += summaryEntry.totalTokens || 0;
-  summary.costTotal += summaryEntry.costTotal || 0;
-  summary.lastSeenAt = summaryEntry.date;
-  summary.recent = [summaryEntry, ...(summary.recent || [])].slice(0, 50);
-  writeJson(USAGE_SUMMARY_FILE, summary);
-  return summary;
-}
-
-function snapshotHostCapabilities(ctx) {
-  const capabilities = typeof ctx.bus?.listCapabilities === "function"
-    ? ctx.bus.listCapabilities()
-    : [];
-  const rows = capabilities.map((capability) => ({
-    type: capability.type,
-    available: capability.available !== false,
-  }));
-  const counts = {
-    updatedAt: new Date().toISOString(),
-    count: rows.length,
-    availableCount: rows.filter((item) => item.available).length,
-  };
-  writeJson(CAPABILITIES_FILE, counts);
-  return counts;
 }
 
 /* ── Activity Log for user-visible learning timeline ── */
@@ -680,6 +601,7 @@ export default definePlugin({
 
     try {
       const capabilities = snapshotHostCapabilities(ctx);
+      writeJson(CAPABILITIES_FILE, capabilities);
       detector.ingestCapabilitySnapshot?.(capabilities);
     } catch (err) {
       ctx.log.warn(`runtime-learner: capability snapshot skipped: ${err.message}`);

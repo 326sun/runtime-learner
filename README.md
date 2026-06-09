@@ -399,18 +399,18 @@ hanako-runtime-learner/
 ├── index.js                   # 插件入口，生命周期调度
 ├── lib/
 │   ├── observer.js             # 事件订阅与回合生命周期
-│   ├── pattern-detector.js     # 核心模式检测引擎 + catIndex + prune 统一
-│   ├── common.js               # 艾宾浩斯衰减、知识分层、SKILL.md 生成
-│   ├── helpers.js              # 工具/错误分类、纠正提取、常量
+│   ├── pattern-detector.js     # 核心模式检测引擎 + catIndex + prune
+│   ├── common.js               # 艾宾浩斯衰减、知识分层、CJK token 估算、SKILL.md 生成
+│   ├── helpers.js              # 工具/错误分类、纠正提取、usage 去重
 │   ├── session-turn.js         # 单回合工具/错误/文本追踪
-│   ├── skill-lifecycle.js      # SKILL.md 生命周期与 token 裁剪
-│   ├── usage.js                # 用量追踪与去重持久化
-│   ├── proposals.js            # 改进提案生命周期
+│   ├── skill-lifecycle.js      # SKILL.md 生命周期 + 技能注册
+│   ├── usage-pipeline.js       # 用量采集、汇总与宿主能力快照
+│   ├── proposals.js            # 改进提案生命周期 + diff 预览
 │   ├── model-advisor.js        # 小模型后台整理
 │   ├── official-memory-bridge.js  # 官方记忆只读桥
 │   ├── official-utility-model.js  # 小模型端点解析
 │   └── hana-runtime-compat.js  # Pi 框架兼容层
-├── tools/                      # 7 个独立工具
+├── tools/                      # 8 个独立工具
 ├── tests/                      # 241 项测试
 ├── skills/                     # SKILL.md 注入
 └── manifest.json

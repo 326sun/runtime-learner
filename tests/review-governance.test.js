@@ -4,11 +4,11 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import { buildSkillPatchProposal, applyProposal, rejectProposal } from "../lib/proposals.js";
-import { previewProposalDiff } from "../lib/diff-preview.js";
+import { previewProposalDiff } from "../lib/proposals.js";
 import { validateProposal } from "../lib/validation-gate.js";
 import { listReviews, reviewIdForProposal, updateReviewStatus, reviewPanel } from "../lib/review-queue.js";
 import { readEvents, replayEventState } from "../lib/event-log.js";
-import { loadSkillRegistry } from "../lib/skill-registry.js";
+import { loadSkillRegistry } from "../lib/skill-lifecycle.js";
 
 const tmpDir = path.join(os.tmpdir(), `learner-review-test-${Date.now()}`);
 

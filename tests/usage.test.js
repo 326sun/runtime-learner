@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { usageDedupKey, normalizeSeenIds } from "../lib/usage.js";
+import { usageDedupKey, normalizeSeenIds } from "../lib/helpers.js";
 
 const summary = {
   date: "2026-06-08T10:00:00.000Z",

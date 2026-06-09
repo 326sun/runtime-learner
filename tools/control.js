@@ -5,7 +5,7 @@ import { defineTool } from "../lib/hana-runtime-compat.js";
 import { sanitizeAdvice } from "../lib/helpers.js";
 import { runModelAdvisor } from "../lib/model-advisor.js";
 import { applyProposal, listProposals, readProposal, rejectProposal } from "../lib/proposals.js";
-import { previewProposalDiff } from "../lib/diff-preview.js";
+import { previewProposalDiff } from "../lib/proposals.js";
 import { validateProposal } from "../lib/validation-gate.js";
 import { enqueueReviewForProposal, listReviews, readReview, reviewPanel, updateReviewStatus } from "../lib/review-queue.js";
 import { readEvents, appendEvent, replayEventState } from "../lib/event-log.js";

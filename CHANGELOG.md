@@ -2,16 +2,23 @@
 
 ## 1.6.1
 
-系统审计修复（8 项）：
+系统审计修复（8 项）+ 模块合并（3 个碎片模块消除）：
 
-- **observer.js**：`self_learning_search` handler 改用防御式 JSON 解析（`typeof raw === "string" ? JSON.parse(raw) : raw`），避免工具端返回已解析对象时静默跳过 adoption 追踪。
-- **common.js + index.js**：新增 `cleanupTempFiles()`，启动时清理 `writeJson` crash 残留的 `*.tmp` 文件。
-- **control.js**：`status` action 输出时对 `modelAdvisorApiKey` / `semanticEmbeddingApiKey` 做脱敏（替换为 `***`）。
-- **index.js**：从 `recordUsage` 移除冗余的 `pruneDataFiles()` 调用，消除 usage bootstrap 阶段 50 次并发空跑。
-- **pattern-detector.js**：`_forgetPattern` 现在遍历所有剩余模式清理指向被删除 id 的孤儿关系边。
-- **pattern-detector.js**：workflow 检测增加 `!uniqueCats.every(c => c === "其他")` 过滤，排除纯未知工具类别噪音。
-- **observer.js**：`flushTurn` 中 userTexts 拼接改为 `slice(-8).join(" ").slice(0, 2000)`，限制长会话内存。
-- **common.js + validation-gate.js + doctor.js**：提取共享 `estimateTokens()` 到 `common.js`，消除三处重复的 CJK token 估算代码。
+**审计修复**
+- **observer.js**：`self_learning_search` handler 改用防御式 JSON 解析。
+- **common.js + index.js**：新增 `cleanupTempFiles()`，启动时清理 crash 残留 `*.tmp` 文件。
+- **control.js**：`status` action 输出时对 API key 做脱敏。
+- **index.js**：从 `recordUsage` 移除冗余 `pruneDataFiles()` 调用。
+- **pattern-detector.js**：`_forgetPattern` 清理孤儿关系边；workflow 检测过滤纯未知工具类别噪音。
+- **observer.js**：`flushTurn` 中 userTexts 拼接限制长度。
+- **common.js**：提取共享 `estimateTokens()`，消除三处重复的 CJK token 估算代码。
+
+**模块合并（减负）**
+- `skill-registry.js` → 合并到 `skill-lifecycle.js`
+- `diff-preview.js` → 合并到 `proposals.js`
+- `usage.js` → 合并到 `helpers.js`
+- `index.js` usage 管道提取为 `lib/usage-pipeline.js`（`usageModelKey` / `usageTotalTokens` / `summarizeUsageEntry` / `updateUsageSummary` / `snapshotHostCapabilities`）
+- lib 目录：29 → 27 文件，index.js：864 → 786 行
 
 ## 1.6.0
 
