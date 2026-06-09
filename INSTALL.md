@@ -1,6 +1,6 @@
-# Runtime Self-Learning 傻瓜安装教程
+# Runtime Self-Learning 安装指南
 
-这个插件用于让 Hanako 在本地记录经验、识别重复错误和用户纠正，并把高置信度提示写入自己的 skill。
+让 Hanako 在本地记录经验、识别重复错误和用户纠正，把高置信度提示写入自己的 skill。
 
 ## 你需要知道的一句话
 
@@ -26,8 +26,8 @@
 
 ```powershell
 cd $env:USERPROFILE\Downloads
-git clone https://github.com/326sun/hanako-runtime-learner.git
-cd hanako-runtime-learner
+git clone https://github.com/326sun/Hanako-runtime-learner.git
+cd Hanako-runtime-learner
 npm run install-plugin
 ```
 
