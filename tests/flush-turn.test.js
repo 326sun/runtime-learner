@@ -23,9 +23,12 @@ function tempDir(name) {
   return path.join(os.tmpdir(), `${name}-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
 }
 
+// Mirrors observer.js resultStatus: "stop" and "end_turn" are both clean
+// completions; "length"/"error" (and anything else non-terminal) are partial.
+const SUCCESS_STOP_REASONS = new Set(["stop", "end_turn"]);
 function resultStatus(turn, stopReason) {
   if (turn.errors.length > 0) return "partial";
-  if (stopReason && stopReason !== "stop") return "partial";
+  if (stopReason && !SUCCESS_STOP_REASONS.has(stopReason)) return "partial";
   return "success";
 }
 
@@ -323,6 +326,22 @@ describe("flushTurn integration", () => {
       assert.equal(exp.errorType, "file_not_found");
       assert.equal(exp.resultStatus, "partial");
       assert.equal(exp.impactLevel, 2);
+    });
+
+    it("treats end_turn as success (not partial)", () => {
+      const turn = new SessionTurn("sessions/end-turn.jsonl");
+      turn.markToolStart("read"); turn.markToolEnd("read");
+      turn.markToolStart("edit"); turn.markToolEnd("edit");
+      turn.stopReason = "end_turn";
+
+      const exp = buildExperience(turn, "sessions/end-turn.jsonl");
+      assert.equal(exp.resultStatus, "success");
+    });
+
+    it("treats length/unknown stop reasons as partial", () => {
+      const turn = new SessionTurn("sessions/len.jsonl");
+      turn.stopReason = "length";
+      assert.equal(buildExperience(turn, "sessions/len.jsonl").resultStatus, "partial");
     });
   });
 });

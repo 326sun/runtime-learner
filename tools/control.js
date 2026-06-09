@@ -2,8 +2,12 @@ import fs from "fs";
 import path from "path";
 import { DEFAULT_CONFIG, readJson, writeJson, loadLearnerConfig, decoratePatterns, hanakoHome, learnerDir as resolveLearnerDir, buildSkillMdFromPatterns } from "../lib/common.js";
 import { defineTool } from "../lib/hana-runtime-compat.js";
+import { sanitizeAdvice } from "../lib/helpers.js";
 import { runModelAdvisor } from "../lib/model-advisor.js";
 import { applyProposal, listProposals, readProposal, rejectProposal } from "../lib/proposals.js";
+import { writeSkillIfChanged } from "../lib/skill-lifecycle.js";
+
+const MAX_SKILL_HISTORY = 20;
 
 function paths(ctx) {
   const learnerDir = resolveLearnerDir();
@@ -27,19 +31,13 @@ function buildSkill(patterns, config, learnerDir) {
   return buildSkillMdFromPatterns(patterns, config, { dataDir: learnerDir });
 }
 
-function snapshotSkill(skillPath, historyDir) {
-  fs.mkdirSync(historyDir, { recursive: true });
-  if (!fs.existsSync(skillPath)) return null;
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const target = path.join(historyDir, `${stamp}-SKILL.md`);
-  fs.copyFileSync(skillPath, target);
-  return target;
-}
-
 function regenerateSkill(pathsValue, patterns, config) {
-  fs.mkdirSync(path.dirname(pathsValue.skillPath), { recursive: true });
-  snapshotSkill(pathsValue.skillPath, pathsValue.historyDir);
-  fs.writeFileSync(pathsValue.skillPath, buildSkill(patterns, config, pathsValue.learnerDir), "utf-8");
+  return writeSkillIfChanged(
+    pathsValue.skillPath,
+    buildSkill(patterns, config, pathsValue.learnerDir),
+    pathsValue.historyDir,
+    { keep: MAX_SKILL_HISTORY },
+  );
 }
 
 const tool = defineTool({
@@ -134,7 +132,13 @@ const tool = defineTool({
       const target = patterns.find((pattern) => pattern.id === input.id);
       if (!target) throw new Error(`pattern not found: ${input.id}`);
       target.status = action === "approve" ? "approved" : "rejected";
-      if (action === "approve" && target.type === "preference") target.knowledgeTier = "durable";
+      if (action === "approve") {
+        if (target.type === "preference") target.knowledgeTier = "durable";
+        // A manual approval outranks a prior machine approval: clear the
+        // autoApproved flag so pruneMemory treats it as user-blessed (immortal),
+        // not as a still-decaying auto-approved pattern.
+        delete target.autoApproved;
+      }
       target.reviewedAt = new Date().toISOString();
       writeJson(p.patternsPath, patterns);
       regenerateSkill(p, patterns, config);
@@ -204,7 +208,26 @@ const tool = defineTool({
         capabilities,
         reason: "manual",
       });
-      if (result.ok) regenerateSkill(p, patterns, config);
+      if (result.ok) {
+        // Merge distilled advice back into patterns before regenerating, so the
+        // manual run actually changes SKILL.md — mirroring the plugin runtime's
+        // advisor path. Without this the advice lands only in model_advice.json
+        // and regenerateSkill rebuilds from unchanged patterns (a no-op).
+        let merged = 0;
+        for (const s of result.advice?.suggestions || []) {
+          const stored = patterns.find((pattern) => pattern.id === s.patternId);
+          if (!stored || stored.status === "approved") continue;
+          const advice = sanitizeAdvice(s.advice);
+          if (advice && advice !== stored.fix) {
+            stored.fix = advice;
+            stored.advisorUpdatedAt = new Date().toISOString();
+            merged += 1;
+          }
+        }
+        if (merged > 0) writeJson(p.patternsPath, patterns);
+        regenerateSkill(p, patterns, config);
+        return JSON.stringify({ ...result, merged }, null, 2);
+      }
       return JSON.stringify(result, null, 2);
     }
 

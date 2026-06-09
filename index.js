@@ -15,10 +15,12 @@ import { DEFAULT_CONFIG, learnerDir, readJson, writeJson, describeOfficialUtilit
 import { definePlugin } from "./lib/hana-runtime-compat.js";
 import { readModelAdvice, runModelAdvisor } from "./lib/model-advisor.js";
 import { applyProposal, buildCodePatchProposal, buildSkillPatchProposal } from "./lib/proposals.js";
-import { normalizeToolName, safeText, toolCategory, shortHash, preferencePatternId, stableKey, isUsageFailure, TASK_SIGS, ERR_PATTERNS, CORRECTION_STRONG, CORRECTION_WEAK, classifyTask, classifyError, extractCorrectionFromUserText } from "./lib/helpers.js";
+import { normalizeToolName, safeText, toolCategory, shortHash, preferencePatternId, stableKey, isUsageFailure, TASK_SIGS, ERR_PATTERNS, CORRECTION_STRONG, CORRECTION_WEAK, classifyTask, classifyError, extractCorrectionFromUserText, sanitizeAdvice } from "./lib/helpers.js";
 import { SessionTurn } from "./lib/session-turn.js";
 import { PatternDetector } from "./lib/pattern-detector.js";
 import { createObserver } from "./lib/observer.js";
+import { usageDedupKey, normalizeSeenIds } from "./lib/usage.js";
+import { snapshotSkill, pruneSkillBackups } from "./lib/skill-lifecycle.js";
 
 const DATA_DIR = learnerDir();
 const EXPERIENCE_LOG = path.join(DATA_DIR, "experience_log.jsonl");
@@ -47,7 +49,7 @@ const runtimeState = {
   persistSeenIds: null,
   refreshSkill: null,
   statusNotifiedAt: new Map(),
-  advisorSkipReasons: new Set(),
+  advisorSkipReasons: new Map(), // reason → timestampMs, TTL 30 min
   proposalNotifiedIds: new Map(), // proposalId → lastNotifiedAt timestamp
   sessionStart: null,
   sessionActivityCount: 0,
@@ -64,23 +66,6 @@ function ensureDir() {
 
 function appendJsonl(file, value) {
   fs.appendFileSync(file, `${JSON.stringify(value)}\n`, "utf-8");
-}
-
-// Sanitize a snippet returned by the external advisor model before it is stored
-// in a pattern's `fix` and injected into SKILL.md. Strips code fences, markdown
-// headings and obvious role/prompt markers, collapses whitespace, and caps
-// length, so a hijacked endpoint cannot smuggle instructions into the agent's
-// context.
-function sanitizeAdvice(text, max = 200) {
-  let s = String(text || "");
-  if (!s) return "";
-  s = s.replace(/```[\s\S]*?```/g, " ")       // fenced code blocks
-       .replace(/^\s*#{1,6}\s+/gm, "")          // markdown headings
-       .replace(/^\s*(system|assistant|user)\s*:/gim, "") // role markers
-       .replace(/[`*_>#]/g, "")                 // markdown control chars
-       .replace(/\s+/g, " ")
-       .trim();
-  return s.slice(0, max);
 }
 
 function loadConfig() {
@@ -282,7 +267,7 @@ export default definePlugin({
     // not re-count requests already summed into usage_summary.json on a prior
     // run — otherwise totalRequests/totalTokens inflate on every restart.
     const SEEN_IDS_CAP = 5000;
-    const seenRequestIds = new Set(readJson(USAGE_SEEN_FILE, []).slice(-SEEN_IDS_CAP));
+    const seenRequestIds = new Set(normalizeSeenIds(readJson(USAGE_SEEN_FILE, []), { cap: SEEN_IDS_CAP }));
     const _seenIdsEvict = () => {
       if (seenRequestIds.size <= SEEN_IDS_CAP) return;
       const iter = seenRequestIds.values();
@@ -342,10 +327,32 @@ export default definePlugin({
           if (!p.id) continue;
           if (p.status !== "approved" && p.status !== "rejected") continue;
           const stored = detector.patterns.get(p.id);
-          if (stored && stored.status !== p.status) {
+          if (!stored) continue;
+          let changed = false;
+          if (stored.status !== p.status) {
             stored.status = p.status;
             if (p.reviewedAt) stored.reviewedAt = p.reviewedAt;
+            changed = true;
           }
+          // Absorb a manual durable promotion: control.js sets knowledgeTier
+          // "durable" when a user approves a preference. Syncing only status
+          // would let the plugin's in-memory "core" value overwrite it on the
+          // next persist, silently demoting the preference back to a decaying
+          // one. Only ever upgrade to durable here — never downgrade — so an
+          // in-memory promotion is never clobbered either.
+          if (p.knowledgeTier === "durable" && stored.knowledgeTier !== "durable") {
+            stored.knowledgeTier = "durable";
+            changed = true;
+          }
+          // A manual approval on disk (status approved, autoApproved cleared)
+          // outranks a prior in-memory machine approval. Clear the flag so the
+          // next persist doesn't write the stale autoApproved back and re-subject
+          // a user-blessed pattern to the forgetting curve.
+          if (p.status === "approved" && !p.autoApproved && stored.autoApproved) {
+            delete stored.autoApproved;
+            changed = true;
+          }
+          if (changed) detector.invalidate();
         }
       } catch {}
     };
@@ -385,18 +392,6 @@ export default definePlugin({
     const flushPersist = () => {
       if (_persistTimer) { clearTimeout(_persistTimer); _persistTimer = null; }
       persistPatternsNow();
-    };
-
-    const snapshotSkill = (skillPath) => {
-      if (!fs.existsSync(skillPath)) return;
-      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-      fs.copyFileSync(skillPath, path.join(HISTORY_DIR, `${stamp}-SKILL.md`));
-      const entries = fs.readdirSync(HISTORY_DIR)
-        .filter((name) => name.endsWith("-SKILL.md"))
-        .sort();
-      for (const old of entries.slice(0, Math.max(0, entries.length - MAX_SKILL_HISTORY))) {
-        fs.rmSync(path.join(HISTORY_DIR, old), { force: true });
-      }
     };
 
     const canSendSessionMessage = () => {
@@ -440,6 +435,12 @@ export default definePlugin({
     const notifyProposalReview = async (sessionPath, proposals = [], { cooldownMs = 2 * 60 * 60_000 } = {}) => {
       if (!config.proposalChatNotificationsEnabled || !sessionPath || proposals.length === 0) return;
       const now = Date.now();
+      // Bound the cooldown map: once an entry is older than the cooldown window it
+      // can never suppress a notification again, so drop it. Keeps the map from
+      // growing unbounded over a long-lived session (one entry per proposal id).
+      for (const [id, ts] of runtimeState.proposalNotifiedIds) {
+        if (now - ts >= cooldownMs) runtimeState.proposalNotifiedIds.delete(id);
+      }
       for (const proposal of proposals) {
         if (!proposal?.id) continue;
         const lastNotified = runtimeState.proposalNotifiedIds.get(proposal.id) || 0;
@@ -491,20 +492,31 @@ export default definePlugin({
       const skillDir = path.join(ctx.pluginDir, "skills", "self-learning");
       fs.mkdirSync(skillDir, { recursive: true });
       const skillPath = path.join(skillDir, "SKILL.md");
-      snapshotSkill(skillPath);
       const content = buildSkillMdFromPatterns(allPatterns, config, {
         turnCount: detector.turnCount,
         dataDir: DATA_DIR,
       });
-      const triggerPatternIds = allPatterns.filter(p => p.injectable).slice(0, 8).map(p => p.id);
-      const proposal = buildSkillPatchProposal({
-        learnerDir: DATA_DIR,
-        skillPath,
-        content,
-        triggerPatternIds,
-      });
-      if (proposal.autoApply && proposal.status !== "applied") {
-        applyProposal(DATA_DIR, proposal.id, { configPath: CONFIG_FILE });
+      // Only touch the skill file when the rendered content actually changed.
+      // Snapshotting/applying unconditionally filled skill_history with
+      // identical copies (making rollback useless) and spawned a fresh .bak per
+      // call via applyProposal. Comparing first makes both side effects fire
+      // only on a real change. lastSkillRefresh is still advanced so the
+      // throttle holds regardless.
+      let current = null;
+      try { current = fs.readFileSync(skillPath, "utf-8"); } catch {}
+      if (current !== content) {
+        snapshotSkill(skillPath, HISTORY_DIR, { keep: MAX_SKILL_HISTORY });
+        const triggerPatternIds = allPatterns.filter(p => p.injectable).slice(0, 8).map(p => p.id);
+        const proposal = buildSkillPatchProposal({
+          learnerDir: DATA_DIR,
+          skillPath,
+          content,
+          triggerPatternIds,
+        });
+        if (proposal.autoApply && proposal.status !== "applied") {
+          applyProposal(DATA_DIR, proposal.id, { configPath: CONFIG_FILE });
+          pruneSkillBackups(skillDir, { keep: MAX_SKILL_HISTORY });
+        }
       }
       maybeProposeCodeImprovements(allPatterns, sessionPath);
       lastSkillRefresh = now;
@@ -528,15 +540,28 @@ export default definePlugin({
       }
     };
 
+    // Advisor skip cache with TTL: avoid logging the same skip reason
+    // repeatedly during a single session.  Entries expire after 30 min so
+    // that transient conditions (rate limit, network blip) can retry.
     const _cachedAdvisorSkip = (reason) => {
       const key = reason || "unknown";
-      if (runtimeState.advisorSkipReasons.has(key)) return true;
-      runtimeState.advisorSkipReasons.add(key);
+      const cached = runtimeState.advisorSkipReasons.get(key);
+      if (cached && Date.now() - cached < 30 * 60_000) return true;
+      runtimeState.advisorSkipReasons.set(key, Date.now());
       return false;
     };
 
+    // In-flight guard: advisor calls are fired without await (e.g. the usage
+    // bootstrap loops up to 50 recordUsage calls synchronously). The rate-limit
+    // gate in shouldRun() reads lastRunAt from disk, which isn't written until a
+    // fetch completes — so without this lock every concurrent call passes the
+    // gate and stampedes the endpoint on first run. Only one advisor run at a
+    // time; concurrent callers bail and the next eligible turn picks it up.
+    let _advisorInFlight = false;
     const maybeRunModelAdvisor = async (reason, sessionPath = null, cachedAll = null) => {
       if (!config.modelAdvisorEnabled) return;
+      if (_advisorInFlight) return;
+      _advisorInFlight = true;
       try {
         const result = await runModelAdvisor({
           config,
@@ -574,6 +599,7 @@ export default definePlugin({
             }
             if (merged > 0) {
               ctx.log.info(`runtime-learner: merged ${merged} advisor insights into patterns`);
+              detector.invalidate();
               refreshSkill(true, sessionPath);
             }
 
@@ -612,13 +638,23 @@ export default definePlugin({
           }
           await notifyWorkStatus(sessionPath, count > 0 ? `已生成 ${count} 条候选建议` : "已完成");
         } else if (!_cachedAdvisorSkip(result.reason)) {
-          ctx.log.info(`runtime-learner: model advisor skipped: ${result.reason}`);
+          // Differentiate between permanent config issues and transient skips.
+          // Configuration problems won't fix themselves; the advisor stays
+          // dormant until a working endpoint is configured.
+          const isConfigIssue = /(?:not configured|incomplete|missing|provider is missing)/i.test(result.reason);
+          if (isConfigIssue) {
+            ctx.log.info(`runtime-learner: model advisor dormant — ${result.reason}. Configure a utility model in Hanako settings to enable it.`);
+          } else {
+            ctx.log.info(`runtime-learner: model advisor skipped: ${result.reason}`);
+          }
         }
       } catch (err) {
         const key = err.message || "unknown";
         if (!_cachedAdvisorSkip(key)) {
           ctx.log.warn(`runtime-learner: model advisor skipped: ${err.message}`);
         }
+      } finally {
+        _advisorInFlight = false;
       }
     };
 
@@ -658,6 +694,10 @@ export default definePlugin({
           const stored = detector.patterns.get(p.id);
           if (stored && stored.status === "pending") {
             stored.status = "approved";
+            // Mark as machine-approved so pruneMemory still subjects it to the
+            // forgetting curve. Only durable patterns and *manually* approved
+            // ones (control.js, which never sets this flag) are kept forever.
+            stored.autoApproved = true;
             stored.reviewedAt = new Date().toISOString();
             count += 1;
           }
@@ -670,8 +710,10 @@ export default definePlugin({
           sessionPath,
         });
         ctx.log.info(`runtime-learner: auto-approved ${count} pattern(s)`);
-        // Invalidate cache since statuses changed
-        return { count, allPatterns: count > 0 ? detector.all() : allPatterns };
+        // Statuses changed in place — invalidate so detector.all() recomputes
+        // the decorated list (otherwise it serves the pre-approval snapshot).
+        detector.invalidate();
+        return { count, allPatterns: detector.all() };
       }
       return { count, allPatterns };
     };
@@ -679,7 +721,7 @@ export default definePlugin({
     const recordUsage = (entry, sessionPath = null) => {
       if (!config.learnFromUsage) return;
       const summaryEntry = summarizeUsageEntry(entry, sessionPath);
-      const dedupKey = summaryEntry.requestId;
+      const dedupKey = usageDedupKey(entry, summaryEntry);
       if (dedupKey && seenRequestIds.has(dedupKey)) return;
       if (dedupKey) { seenRequestIds.add(dedupKey); _seenIdsEvict(); _seenIdsDirty = true; }
       try {
@@ -696,7 +738,13 @@ export default definePlugin({
           });
           runtimeState.sessionActivityCount += 1;
         }
-        const { allPatterns } = autoApprovePatterns(sessionPath);
+        autoApprovePatterns(sessionPath);
+        // Prune here too: usage-heavy / low-turn sessions would otherwise never
+        // hit the forgetting curve (only flushTurn used to call pruneMemory),
+        // letting patterns pile up to the hard cap. Recompute allPatterns after
+        // pruning so the skill/advisor never see just-pruned entries.
+        detector.pruneMemory();
+        const allPatterns = detector.all();
         persistPatterns();
         pruneDataFiles().catch(() => {});
         refreshSkill(false, sessionPath, allPatterns);
@@ -799,6 +847,8 @@ export default definePlugin({
     runtimeState.persistSeenIds = null;
     runtimeState.refreshSkill = null;
     runtimeState.statusNotifiedAt.clear();
+    // Runtime state: advisorSkipReasons is now a Map<reason, timestampMs>
+    // for TTL expiry support (see _cachedAdvisorSkip above).
     runtimeState.advisorSkipReasons.clear();
     runtimeState.pendingAdoptionChecks.clear();
     runtimeState.proposalNotifiedIds.clear();

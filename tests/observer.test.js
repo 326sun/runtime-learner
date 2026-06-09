@@ -259,6 +259,24 @@ describe("SessionObserver — event routing", () => {
       assert.equal(pref.score, 5);
     });
 
+    it("pin_memory ignores empty/missing args instead of storing junk", () => {
+      const detector = new PatternDetector({ minInjectScore: 8 });
+      const mocks = setupMocks({ detector });
+      const observer = createObserver(mocks);
+
+      let eventCallback;
+      observer.subscribe({
+        subscribe(cb) { eventCallback = cb; return () => {}; },
+      }, { learnFromUsage: false });
+
+      // No args at all, and empty-object args — neither should create a pattern.
+      eventCallback({ type: "tool_execution_end", toolName: "pin_memory", isError: false }, "sessions/test.jsonl");
+      eventCallback({ type: "tool_execution_end", toolName: "pin_memory", isError: false, args: {} }, "sessions/test.jsonl");
+      eventCallback({ type: "tool_execution_end", toolName: "pin_memory", isError: false, args: { content: "   " } }, "sessions/test.jsonl");
+
+      assert.equal(detector.patterns.size, 0, "no preference should be created from empty pin_memory args");
+    });
+
     it("self_learning_search tracks searched patterns", () => {
       const detector = new PatternDetector({ minInjectScore: 8 });
       // Create a workflow pattern first
@@ -301,6 +319,95 @@ describe("SessionObserver — event routing", () => {
       const pending = runtimeState.pendingAdoptionChecks.get("sessions/test.jsonl");
       assert.ok(pending);
       assert.equal(pending.remaining, 3);
+    });
+  });
+
+  describe("adoption feedback", () => {
+    it("refreshes the skill after degrading unadopted searched workflows", () => {
+      const detector = new PatternDetector({ minInjectScore: 8 });
+      detector.patterns.set("workflow:test", {
+        id: "workflow:test",
+        type: "workflow",
+        desc: "test workflow",
+        count: 3,
+        tools: ["grep", "edit"],
+        score: 9,
+        context: { categories: ["文件探索", "代码编写"] },
+      });
+
+      const sessions = new Map();
+      const turn = new SessionTurn("sessions/test.jsonl");
+      turn.markToolStart("ls");
+      turn.markToolEnd("ls");
+      sessions.set("sessions/test.jsonl", turn);
+
+      const runtimeState = {
+        pendingAdoptionChecks: new Map([
+          ["sessions/test.jsonl", { searches: [{ patternId: "workflow:test", tools: ["grep", "edit"] }], remaining: 1 }],
+        ]),
+        sessionActivityCount: 0,
+      };
+      const refreshCalls = [];
+      const mocks = setupMocks({
+        detector,
+        sessions,
+        runtimeState,
+        refreshSkill: (...args) => refreshCalls.push(args),
+      });
+      const observer = createObserver(mocks);
+
+      let eventCallback;
+      observer.subscribe({
+        subscribe(cb) { eventCallback = cb; return () => {}; },
+      }, { learnFromUsage: false });
+
+      eventCallback(
+        { type: "message_end", message: { role: "assistant", stopReason: "stop" } },
+        "sessions/test.jsonl"
+      );
+
+      assert.equal(detector.patterns.get("workflow:test").score, 8);
+      assert.ok(refreshCalls.some(([force]) => force === true));
+    });
+
+    it("does not degrade a workflow that was adopted earlier in the window", () => {
+      const detector = new PatternDetector({ minInjectScore: 8 });
+      detector.patterns.set("workflow:test", {
+        id: "workflow:test", type: "workflow", desc: "test workflow",
+        count: 3, tools: ["grep", "edit"], score: 9,
+        context: { categories: ["文件探索", "代码编写"] },
+      });
+
+      const sessions = new Map();
+      const runtimeState = {
+        pendingAdoptionChecks: new Map([
+          // 2 turns left in the window; this turn will adopt (grep+edit used).
+          ["sessions/test.jsonl", { searches: [{ patternId: "workflow:test", tools: ["grep", "edit"] }], remaining: 2 }],
+        ]),
+        sessionActivityCount: 0,
+      };
+      const mocks = setupMocks({ detector, sessions, runtimeState });
+      const observer = createObserver(mocks);
+      let eventCallback;
+      observer.subscribe({ subscribe(cb) { eventCallback = cb; return () => {}; } }, { learnFromUsage: false });
+
+      // Turn 1: uses grep+edit → adoption (+3 → 12), remaining 2→1.
+      const t1 = new SessionTurn("sessions/test.jsonl");
+      t1.markToolStart("grep"); t1.markToolEnd("grep");
+      t1.markToolStart("edit"); t1.markToolEnd("edit");
+      sessions.set("sessions/test.jsonl", t1);
+      eventCallback({ type: "message_end", message: { role: "assistant", stopReason: "stop" } }, "sessions/test.jsonl");
+      assert.equal(detector.patterns.get("workflow:test").score, 12, "adopted once, +3");
+
+      // Turn 2: closes the window with no re-adoption (only ls). Must NOT degrade,
+      // because the workflow was already adopted earlier in the window.
+      const t2 = new SessionTurn("sessions/test.jsonl");
+      t2.markToolStart("ls"); t2.markToolEnd("ls");
+      sessions.set("sessions/test.jsonl", t2);
+      eventCallback({ type: "message_end", message: { role: "assistant", stopReason: "stop" } }, "sessions/test.jsonl");
+
+      assert.equal(detector.patterns.get("workflow:test").score, 12, "previously-adopted workflow is not degraded at window close");
+      assert.equal(runtimeState.pendingAdoptionChecks.has("sessions/test.jsonl"), false, "window closed");
     });
   });
 

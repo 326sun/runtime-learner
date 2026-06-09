@@ -4,11 +4,11 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.7.6-blue" alt="version">
+  <img src="https://img.shields.io/badge/version-0.8.1-blue" alt="version">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="license">
   <img src="https://img.shields.io/badge/platform-Hanako%20Agent%20v0.293%2B-orange" alt="platform">
   <img src="https://img.shields.io/badge/node-%E2%89%A518-brightgreen" alt="node">
-  <img src="https://img.shields.io/badge/tests-106%2F106-success" alt="tests">
+  <img src="https://img.shields.io/badge/tests-128%2F128-success" alt="tests">
 </p>
 
 ---
@@ -17,7 +17,7 @@
 
 Hanako 插件。本地观察你的交互习惯——重复的工作流、反复触发的错误、明确的纠正——从中提取可复用的经验，自动注入到 Agent 的后续会话中。
 
-v0.7.2 是第三个架构阶段：全自动进化管道，含艾宾浩斯衰减、自我强化抑制、类别索引优化、observer 模块化、CJK 感知 token 估算。
+v0.8.1 在管道完整性的基础上进行了两轮深层逻辑修复——剪枝后序列缓存未清理导致的忘却失效、工作流 taskType 累积重复、人工承认未清除 autoApproved 标记等 13 处修正，管道的自我一致性得到实质性加固。
 
 ---
 
@@ -43,7 +43,8 @@ hanako-runtime-learner_self_learning_stats
 |---|---|---|
 | 被动日志 | v0.1–0.3 | 记录工具调用和错误，事后可查 |
 | 主动检测 | v0.4–0.5 | 模式浮现时自动生成 pattern，通过 SKILL.md 注入 |
-| **全自动进化** | **v0.6+** | 艾宾浩斯衰减自然淘汰、提案系统生成改进建议、observer 模块化 |
+| **全自动进化** | v0.6–0.7 | 艾宾浩斯衰减自然淘汰、提案系统、observer 模块化、官方记忆桥 |
+| **管道加固** | **v0.8+** | 深层逻辑修复（忘却失效/竞态/永生缺陷）、采纳追踪重写、bonus 持久化、usage 路径补剪枝 |
 
 ---
 
@@ -103,15 +104,16 @@ flowchart TD
 
 - 🔍 **模式检测** 工具类别组合识别工作流、二阶段正则提取用户纠正、错误分类评分（9 类细分，含可重试/不可重试区分）
 - 🧠 **艾宾浩斯衰减** `score × e^(-λt)` 模拟记忆曲线，高频持久，低频自然淘汰
+- 🛡️ **忘却一致性** 剪枝时同步清理 seqCache/seqInsertOrder，防止已遗忘模式从旧序列计数满分复活
 - ⚡ **计算缓存** `all()` dirty-flag 缓存，每次 flushTurn 从 4 次全量计算降至 1 次
 - 📊 **类别索引** `catIndex`（`Map<category, Set<patternId>>`）将关系检测从 O(n²) 降至 O(c × avgPerCat)
 - 🔗 **反馈回路** `pin_memory` 直接注入偏好，`self_learning_search` 触发 adoption 追踪
-- 🛑 **自强化抑制** adoption 窗口关闭时未采纳工作流 -1 衰减，防止评分通胀
+- 🛑 **自强化抑制** 跨窗口累积采纳记录，关闭时只降权从未被采纳的工作流
 - 📝 **改进提案** `skill_patch`（自动应用）与 `code_patch`（人工审批）两级风险提案
-- 🤖 **模型顾问** 小模型后台去重合并 pattern，整理表述
+- 🤖 **模型顾问** 以 ID 新增数而非总数差判断是否运行，对剪枝免疫
 - 🔗 **官方记忆桥** 只读桥接 Hanako 内置记忆，搜索时混合返回
 - 📐 **CJK token 估算** 中文 1.8 token/字、英文 0.25 token/字分段估算，精度从 ±40% 提升至 ±15%
-- ⚡ **I/O 减载** mtime 缓存跳过无变更时的磁盘重读
+- ⚡ **I/O 减载** mtime 缓存跳过无变更时的磁盘重读；patterns.json 写入合并为 ~1.5s 去抖
 
 ---
 
@@ -237,25 +239,27 @@ hanako-runtime-learner/
 ├── index.js                   # 插件入口，生命周期调度
 ├── lib/
 │   ├── observer.js             # 事件订阅与回合生命周期
-│   ├── pattern-detector.js     # 核心模式检测引擎 + catIndex
+│   ├── pattern-detector.js     # 核心模式检测引擎 + catIndex + prune 统一
 │   ├── common.js               # 艾宾浩斯衰减、知识分层、SKILL.md 生成
 │   ├── helpers.js              # 工具/错误分类、纠正提取、常量
 │   ├── session-turn.js         # 单回合工具/错误/文本追踪
+│   ├── skill-lifecycle.js      # SKILL.md 生命周期与 token 裁剪
+│   ├── usage.js                # 用量追踪与去重持久化
 │   ├── proposals.js            # 改进提案生命周期
 │   ├── model-advisor.js        # 小模型后台整理
 │   ├── official-memory-bridge.js  # 官方记忆只读桥
 │   ├── official-utility-model.js  # 小模型端点解析
 │   └── hana-runtime-compat.js  # Pi 框架兼容层
-├── tools/                      # 6 个独立工具
-├── tests/                      # 7 个测试文件，106 项
+├── tools/                      # 7 个独立工具
+├── tests/                      # 128 项测试
 ├── skills/                     # SKILL.md 注入
 └── manifest.json
 ```
 
 ```powershell
 npm install
-npm run check   # 17 个源文件语法检查
-npm test        # 106 项测试，7 个文件
+npm run check   # 源文件语法检查
+npm test        # 128 项测试
 ```
 
 ---

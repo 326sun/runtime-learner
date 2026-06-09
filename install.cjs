@@ -32,12 +32,15 @@ const JS_FILES = [
   "lib/observer.js",
   "lib/proposals.js",
   "lib/session-turn.js",
+  "lib/usage.js",
+  "lib/skill-lifecycle.js",
   "tools/stats.js",
   "tools/report.js",
   "tools/control.js",
   "tools/activity.js",
   "tools/open-dir.js",
   "tools/search.js",
+  "tools/normalize-config.js",
 ];
 let syntaxOk = true;
 for (const file of JS_FILES) {

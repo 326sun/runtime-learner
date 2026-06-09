@@ -100,5 +100,35 @@ describe("model advisor", () => {
       assert.equal(second.skipped, true);
       assert.equal(calls, 1);
     });
+
+    it("gates on genuinely new pattern IDs, immune to total-count shrink/churn", async () => {
+      globalThis.fetch = async () => jsonResponse();
+      const cfg = { ...baseConfig, minAdvisorNewPatterns: 2 };
+      const mk = (id) => ({ id, type: "error", status: "pending", count: 4, score: 8, desc: "d", fix: "" });
+      // The min-interval gate clamps to ≥1 min, so clear only lastRunAt between
+      // runs (keeping lastPatternIds) to isolate the new-pattern gate from it.
+      const statePath = path.join(learnerDir(), "model_advice_state.json");
+      const clearRunAt = () => {
+        const s = JSON.parse(fs.readFileSync(statePath, "utf-8"));
+        delete s.lastRunAt;
+        fs.writeFileSync(statePath, JSON.stringify(s));
+      };
+
+      // First run establishes the baseline ID set {a, b, c}.
+      const first = await advisor.runModelAdvisor({ config: cfg, patterns: [mk("a"), mk("b"), mk("c")] });
+      assert.equal(first.ok, true);
+      clearRunAt();
+
+      // Churn: 2 pruned, 2 new (total count drops). A total-count delta would be
+      // <= 0 and wrongly suppress; the ID-based gate sees 2 new and runs.
+      const churn = await advisor.runModelAdvisor({ config: cfg, patterns: [mk("a"), mk("d"), mk("e")] });
+      assert.equal(churn.ok, true, "2 genuinely new IDs should pass even as total count drops");
+      clearRunAt();
+
+      // Only 1 new ID (f) since last run {a,d,e} → below threshold → skip.
+      const oneNew = await advisor.runModelAdvisor({ config: cfg, patterns: [mk("d"), mk("e"), mk("f")] });
+      assert.equal(oneNew.ok, false);
+      assert.equal(oneNew.skipped, true);
+    });
   });
 });

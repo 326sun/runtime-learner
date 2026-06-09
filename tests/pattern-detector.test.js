@@ -275,6 +275,21 @@ describe("PatternDetector", () => {
       assert.ok(changes.length >= 1);
       assert.ok(changes.some((c) => c.pattern.id.includes("failed_request")));
     });
+
+    it("does not flag benign non-whitelisted statuses as failed requests", () => {
+      const detector = new PatternDetector({});
+      for (const status of ["succeeded", "stopped", "finished"]) {
+        const changes = detector.ingestUsage({
+          date: new Date().toISOString(),
+          model: "deepseek-v4-pro",
+          status,
+          subsystem: "chat",
+          operation: "send",
+        });
+        assert.ok(!changes.some((c) => c.pattern.id.includes("failed_request")),
+          `status "${status}" must not create a failed_request pattern`);
+      }
+    });
   });
 
   describe("pruneMemory", () => {
@@ -295,6 +310,81 @@ describe("PatternDetector", () => {
       }
       const pruned = detector.pruneMemory();
       assert.ok(pruned >= 10);
+    });
+
+    it("score-floor prunes a decayed auto-approved pattern but keeps manually approved", () => {
+      const detector = new PatternDetector({});
+      const old = new Date(Date.now() - 365 * 86_400_000).toISOString();
+      detector.patterns.set("error:auto", {
+        id: "error:auto", type: "error", status: "approved", autoApproved: true,
+        count: 1, score: 4, firstSeen: old, lastSeen: old,
+      });
+      detector.patterns.set("error:manual", {
+        id: "error:manual", type: "error", status: "approved",
+        count: 1, score: 4, firstSeen: old, lastSeen: old,
+      });
+      detector.pruneMemory();
+      assert.equal(detector.patterns.has("error:auto"), false, "auto-approved decays away");
+      assert.equal(detector.patterns.has("error:manual"), true, "manual approval is immortal");
+    });
+
+    it("clears seqCache when a workflow is pruned so it does not resurrect at full strength", () => {
+      const detector = new PatternDetector({ decayHalfLifeDays: 1 });
+      const exp = makeExp({ toolsUsed: ["grep", "edit", "bash"] });
+      detector.ingest(exp);
+      detector.ingest(exp);
+      detector.ingest(exp); // workflow created at count 3
+      const wfId = "workflow:代码编写→文件探索";
+      assert.ok(detector.patterns.has(wfId));
+      assert.equal(detector.seqCache.get("代码编写→文件探索"), 3);
+
+      // Age it past the decay floor and prune.
+      detector.patterns.get(wfId).lastSeen = new Date(Date.now() - 10 * 86_400_000).toISOString();
+      detector.pruneMemory();
+      assert.equal(detector.patterns.has(wfId), false, "stale workflow is pruned");
+      assert.equal(detector.seqCache.has("代码编写→文件探索"), false, "its counter is cleared too");
+      assert.equal(detector.seqInsertOrder.includes("代码编写→文件探索"), false);
+
+      // A single recurrence must NOT instantly recreate it (count restarts at 1).
+      detector.ingest(makeExp({ toolsUsed: ["grep", "edit", "bash"] }));
+      assert.equal(detector.patterns.has(wfId), false, "does not resurrect from one recurrence");
+    });
+
+    it("dedupes workflow taskType accumulation instead of compounding duplicates", () => {
+      const detector = new PatternDetector({});
+      const t = (taskType) => makeExp({ toolsUsed: ["grep", "edit", "bash"], taskType });
+      detector.ingest(t("coding"));
+      detector.ingest(t("coding"));
+      detector.ingest(t("coding")); // created, taskType "coding"
+      detector.ingest(t("research")); // -> "coding,research"
+      detector.ingest(t("coding")); // must stay "coding,research", not add a dup
+
+      const wf = detector.patterns.get("workflow:代码编写→文件探索");
+      const parts = wf.context.taskType.split(",");
+      assert.deepEqual(parts, [...new Set(parts)], "no duplicate task types");
+      assert.ok(parts.includes("coding") && parts.includes("research"));
+    });
+
+    it("strength cap can evict auto-approved patterns but never manual/durable", () => {
+      const detector = new PatternDetector({});
+      const old = new Date(Date.now() - 365 * 86_400_000).toISOString();
+      // One protected manual + one auto-approved, then flood weak pending ones.
+      detector.patterns.set("error:manual", {
+        id: "error:manual", type: "error", status: "approved",
+        count: 1, score: 5, firstSeen: old, lastSeen: old,
+      });
+      detector.patterns.set("error:auto", {
+        id: "error:auto", type: "error", status: "approved", autoApproved: true,
+        count: 1, score: 5, firstSeen: old, lastSeen: old,
+      });
+      for (let i = 0; i < 130; i++) {
+        detector.patterns.set(`error:p${i}`, {
+          id: `error:p${i}`, type: "error", status: "pending",
+          count: 5, score: 50, firstSeen: new Date().toISOString(), lastSeen: new Date().toISOString(),
+        });
+      }
+      detector.pruneMemory();
+      assert.equal(detector.patterns.has("error:manual"), true, "manual approval survives the cap");
     });
   });
 
@@ -340,6 +430,22 @@ describe("PatternDetector", () => {
       });
       const all = detector.all();
       assert.ok(!all.some((p) => p.id === "test:cap"));
+    });
+
+    it("serves a cached snapshot until invalidate() after a side-channel mutation", () => {
+      const detector = new PatternDetector({});
+      detector.ingestError(makeError({ errorType: "boom", severity: 4 }));
+      const before = detector.all().find((p) => p.id === "error:boom");
+      assert.equal(before.status, "pending");
+
+      // Direct field mutation (as auto-approve / score boosts do) does NOT touch
+      // the dirty bit, so the cache still reflects the old status.
+      detector.patterns.get("error:boom").status = "approved";
+      assert.equal(detector.all().find((p) => p.id === "error:boom").status, "pending");
+
+      // invalidate() forces a recompute on the next all() call.
+      detector.invalidate();
+      assert.equal(detector.all().find((p) => p.id === "error:boom").status, "approved");
     });
   });
 

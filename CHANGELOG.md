@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.8.1
+
+自我学习逻辑修复（13 处）：
+
+深层修复（第二轮）：
+
+- **剪枝后 seqCache 未清理导致忘却失效**（重大）：`pruneMemory` 删除工作流模式时未清除对应的 `seqCache`/`seqInsertOrder` 计数器；被衰减剪掉的工作流只要序列再现一次就从旧计数 `+1` 满分复活，使遗忘曲线形同虚设。新增 `_forgetPattern()` 统一清理三处剪枝路径（`pattern-detector.js`）
+- **工作流 taskType 累积重复**：合并时把既有的逗号连接串当成单个不可分 token，导致 `"coding,research" + "coding" → "coding,research,coding"`。改为先按逗号拆分再去重（`pattern-detector.js`）
+- **人工承认未清除 autoApproved**：用户经 control 承认自动批准过的模式时，`autoApproved` 残留致其仍被遗忘曲线剪枝。control 承认时 `delete autoApproved`，`syncDiskStatus` 同步吸收该清除避免被运行中插件回写（`control.js`、`index.js`）
+
+第一轮修复（10 处）：
+
+- **model advisor 门控**：以"模式 ID 新增数"替代"模式总数差"判断是否运行。此前总数因剪枝/换血下降会让 delta 变负，永久压制 advisor；现按上次运行的 ID 集合统计真正新增的模式，对剪枝免疫（`model-advisor.js`）
+- **采纳窗口降权**：跨整个窗口累积记录已采纳的工作流（`adoptedIds`），窗口关闭时只降权"从未被采纳"的；此前只看最后一轮，会误降权早已采纳的工作流（`observer.js`）
+- **pin_memory 入库**：只接受显式的字符串 `content`，不再 `JSON.stringify(args)` 兜底——避免缺参/空对象事件把 `"{}"` 存成永久已批准偏好（`observer.js`）
+- **自动批准不再永生**：自动批准的模式标记 `autoApproved`，仍受遗忘曲线剪枝；只有 durable 与"人工批准"的模式永久保留（`index.js`、`pattern-detector.js`）
+- **usage 路径补剪枝**：`recordUsage` 也调用 `pruneMemory()` 并在剪枝后重算快照；此前仅 turn flush 路径剪枝，高 usage/低 turn 会话会堆到上限（`index.js`）
+- **flush 顺序**：先 `pruneMemory()` 再取 `all()` 传给 skill/advisor，避免本轮注入刚被剪掉的模式（`observer.js`）
+- **isUsageFailure**：改为显式失败状态黑名单，`succeeded`/`stopped`/`finished` 等良性状态不再误生成 `usage:failed_request`（`helpers.js`）
+- **工作流加分持久化**：正反馈/采纳奖励记入 `bonus`，ingest 用 `count*3 + bonus` 计分；此前 `Math.max(score, count*3)` 会随 count 增长吞掉奖励（`pattern-detector.js`、`observer.js`）
+- **code_patch 提案 ID**：仅按 `pattern.id` 哈希，advisor 改写 fix 文案不再生成新提案，已拒绝的提案保持抑制（`proposals.js`）
+- **跨消息纠正检测**：信号扫描窗口扩到 1000 字，存储仍截断到 300；此前 300 字截断会丢掉后续消息里的弱信号（`helpers.js`）
+- SKILL.md 头部计数文案修正（轮数 vs 模式数）；两轮共新增 8 项回归测试（总计 128 项）
+
 ## 0.8.0
 
 - 降噪：`maybeProposeCodeImprovements` 跳过 `approved` 模式，已处理过的 error/usage 不再重复提案

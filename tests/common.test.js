@@ -84,9 +84,11 @@ describe("knowledgeTier", () => {
     assert.equal(knowledgeTier({ type: "preference", knowledgeTier: "core" }), "core");
   });
 
-  it("partitions runtime noise as ephemeral", () => {
+  it("partitions runtime noise as ephemeral, usage patterns as core", () => {
     assert.equal(knowledgeTier({ type: "capability" }), "ephemeral");
-    assert.equal(knowledgeTier({ id: "usage:large_context:abc" }), "ephemeral");
+    // usage:large_context was ephemeral in v0.7 but is now core (v0.8 fix #2)
+    // so it appears in skill generation and search results.
+    assert.equal(knowledgeTier({ id: "usage:large_context:abc" }), "core");
   });
 
   it("defaults ordinary patterns to core", () => {
@@ -152,9 +154,19 @@ describe("isInjectable", () => {
     assert.equal(isInjectable(pattern, config), true);
   });
 
-  it("core preference correction is searchable but not injectable", () => {
-    const pattern = { status: "pending", type: "preference", knowledgeTier: "core", score: 20, count: 5, fix: "do this" };
-    assert.equal(isInjectable(pattern, config), false);
+  it("reinforced core preference is injectable when includePendingPreferences is on", () => {
+    const pattern = { status: "pending", type: "preference", knowledgeTier: "core", score: 20, count: 5, lastSeen: new Date().toISOString(), fix: "do this" };
+    assert.equal(isInjectable(pattern, { ...config, includePendingPreferences: true }), true);
+  });
+
+  it("core preference is gated off when includePendingPreferences is off", () => {
+    const pattern = { status: "pending", type: "preference", knowledgeTier: "core", score: 20, count: 5, lastSeen: new Date().toISOString(), fix: "do this" };
+    assert.equal(isInjectable(pattern, { ...config, includePendingPreferences: false }), false);
+  });
+
+  it("low-confidence core preference stays local even with the opt-in on", () => {
+    const pattern = { status: "pending", type: "preference", knowledgeTier: "core", score: 6, count: 1, lastSeen: new Date().toISOString(), fix: "do this" };
+    assert.equal(isInjectable(pattern, { ...config, includePendingPreferences: true }), false);
   });
 
   it("null pattern returns false", () => {
@@ -253,8 +265,11 @@ describe("buildSkillMdFromPatterns", () => {
     assert.ok(md.includes("Verified User Preferences"));
     assert.ok(md.includes("Always use tabs"));
     assert.ok(md.includes("Advisor-distilled hint"));
+    // Raw durable pending corrections stay out of the skill (only approved or
+    // advisor-distilled durable prefs qualify).
     assert.ok(!md.includes("Raw unprocessed correction"));
-    assert.ok(!md.includes("Transient correction only"));
+    // Reinforced core-tier preference now surfaces under includePendingPreferences.
+    assert.ok(md.includes("Transient correction only"));
     assert.ok(md.includes("Recent Workflows"));
   });
 
