@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "hanako-runtime-learner",
   "name": "Runtime Self-Learning",
-  "version": "0.8.1",
+  "version": "1.3.0",
   "description": "运行时自我学习引擎：观察本地交互习惯，归纳重复工作流和错误，并注入保守的经验提示。",
   "author": "Sun",
   "trust": "full-access",
@@ -15,7 +15,8 @@
     "onToolCall:self_learning_control",
     "onToolCall:self_learning_activity",
     "onToolCall:self_learning_open_dir",
-    "onToolCall:self_learning_search"
+    "onToolCall:self_learning_search",
+    "onToolCall:self_learning_doctor"
   ],
   "capabilities": {
     "chat": true
@@ -50,8 +51,8 @@
         },
         "includePendingPreferences": {
           "type": "boolean",
-          "title": "允许未审核的偏好提示参与注入",
-          "default": true
+          "title": "允许未审核的偏好提示参与注入（默认关闭，高级单用户可开启）",
+          "default": false
         },
         "learnFromUsage": {
           "type": "boolean",
@@ -127,6 +128,26 @@
           "type": "boolean",
           "title": "在对话中通知待处理改进提案（默认关闭，会主动插入消息）",
           "default": false
+        },
+        "semanticSearchEnabled": {
+          "type": "boolean",
+          "title": "启用语义检索（默认关闭，开启后会把记忆文本发送到你配置的 embedding 端点）",
+          "default": false
+        },
+        "semanticEmbeddingBaseUrl": {
+          "type": "string",
+          "title": "语义 embedding Base URL（OpenAI 兼容）",
+          "default": ""
+        },
+        "semanticEmbeddingApiKey": {
+          "type": "string",
+          "title": "语义 embedding API Key",
+          "default": ""
+        },
+        "semanticEmbeddingModel": {
+          "type": "string",
+          "title": "语义 embedding 模型名称",
+          "default": ""
         },
         "dataDirPath": {
           "type": "string",

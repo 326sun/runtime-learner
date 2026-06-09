@@ -30,6 +30,7 @@ const USAGE_SEEN_FILE = path.join(DATA_DIR, "usage_seen.json");
 const CAPABILITIES_FILE = path.join(DATA_DIR, "host_capabilities.json");
 const PATTERNS_FILE = path.join(DATA_DIR, "patterns.json");
 const TURNS_FILE = path.join(DATA_DIR, "turns.jsonl");
+const EPISODES_FILE = path.join(DATA_DIR, "episodes.jsonl");
 const CONFIG_FILE = path.join(DATA_DIR, "config.json");
 const ACTIVITY_LOG = path.join(DATA_DIR, "activity_log.jsonl");
 const HISTORY_DIR = path.join(DATA_DIR, "skill_history");
@@ -194,7 +195,7 @@ async function pruneDataFiles() {
   // Prune JSONL files: drop lines older than retention window.
   // Every log file is pruned regardless of size — the 30-day retention
   // promise in the privacy docs takes priority over I/O optimisation.
-  const logFiles = [EXPERIENCE_LOG, TURNS_FILE, ERROR_LOG, ACTIVITY_LOG];
+  const logFiles = [EXPERIENCE_LOG, TURNS_FILE, EPISODES_FILE, ERROR_LOG, ACTIVITY_LOG];
   for (const file of logFiles) {
     try {
       if (!fs.existsSync(file)) continue;
@@ -785,7 +786,7 @@ export default definePlugin({
       recordUsage,
       configRef,
       ctx,
-      paths: { TURNS_FILE, EXPERIENCE_LOG, ERROR_LOG, CONFIG_FILE },
+      paths: { TURNS_FILE, EPISODES_FILE, EXPERIENCE_LOG, ERROR_LOG, CONFIG_FILE },
       MAX_SESSIONS,
     });
 

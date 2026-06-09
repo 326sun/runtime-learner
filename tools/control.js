@@ -6,6 +6,9 @@ import { sanitizeAdvice } from "../lib/helpers.js";
 import { runModelAdvisor } from "../lib/model-advisor.js";
 import { applyProposal, listProposals, readProposal, rejectProposal } from "../lib/proposals.js";
 import { writeSkillIfChanged } from "../lib/skill-lifecycle.js";
+import { runDoctorFromDisk, formatReport } from "./doctor.js";
+import { generateMemFS } from "../lib/memfs.js";
+import { loadFacts } from "../lib/facts.js";
 
 const MAX_SKILL_HISTORY = 20;
 
@@ -48,13 +51,14 @@ const tool = defineTool({
     properties: {
       action: {
         type: "string",
-        enum: ["status", "list", "approve", "reject", "set_config", "rollback", "regenerate_skill", "run_model_advisor", "list_proposals", "show_proposal", "apply_proposal", "reject_proposal", "diagnose_bus"],
+        enum: ["status", "list", "approve", "reject", "set_config", "rollback", "regenerate_skill", "regenerate_memfs", "run_model_advisor", "list_proposals", "show_proposal", "apply_proposal", "reject_proposal", "doctor", "diagnose_bus"],
         description: "Control action to run.",
       },
       id: { type: "string", description: "Pattern id for approve/reject." },
       proposalId: { type: "string", description: "Proposal id for show/apply/reject proposal actions." },
       reason: { type: "string", description: "Optional reason for proposal rejection." },
       status: { type: "string", description: "Optional proposal status filter: pending, applied, or rejected." },
+      format: { type: "string", enum: ["text", "json"], description: "Output format for the doctor action. Default text." },
       autoInjectHighConfidence: { type: "boolean", description: "Whether high-confidence pending patterns can be injected automatically." },
       autoApproveHighConfidence: { type: "boolean", description: "Whether high-confidence pending patterns are automatically approved (no manual review needed)." },
       minInjectScore: { type: "number", description: "Minimum decayed score for automatic injection." },
@@ -77,6 +81,10 @@ const tool = defineTool({
       workStatusEnabled: { type: "boolean", description: "Whether to send a short status message when self-learning work completes." },
       workStatusText: { type: "string", description: "Status message prefix." },
       proposalChatNotificationsEnabled: { type: "boolean", description: "Whether to send chat messages when new high-risk improvement proposals are created." },
+      semanticSearchEnabled: { type: "boolean", description: "Enable semantic retrieval (RRF over BM25 + embeddings). Sends memory text to your embedding endpoint when on." },
+      semanticEmbeddingBaseUrl: { type: "string", description: "OpenAI-compatible base URL for the embeddings endpoint." },
+      semanticEmbeddingApiKey: { type: "string", description: "API key for the embeddings endpoint." },
+      semanticEmbeddingModel: { type: "string", description: "Embedding model id." },
     },
     required: ["action"],
   },
@@ -240,6 +248,18 @@ const tool = defineTool({
       fs.mkdirSync(path.dirname(p.skillPath), { recursive: true });
       fs.copyFileSync(path.join(p.historyDir, latest), p.skillPath);
       return JSON.stringify({ ok: true, restored: latest, skillPath: p.skillPath }, null, 2);
+    }
+
+    if (action === "regenerate_memfs") {
+      const facts = loadFacts(p.learnerDir);
+      const result = generateMemFS(p.learnerDir, { patterns, facts, config });
+      return JSON.stringify({ ok: true, ...result }, null, 2);
+    }
+
+    if (action === "doctor") {
+      const report = runDoctorFromDisk(p.learnerDir);
+      if (input.format === "json") return JSON.stringify(report, null, 2);
+      return formatReport(report);
     }
 
     if (action === "diagnose_bus") {

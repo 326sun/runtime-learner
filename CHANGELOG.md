@@ -1,5 +1,70 @@
 # Changelog
 
+## 1.3.0
+
+可选语义检索 + RRF 融合（计划 §7.6）：
+
+- **新增 `lib/rank-fusion.js`**：Reciprocal Rank Fusion。按位次（非分值）融合多路排序 `score(id)=Σ 1/(k+rank)`，对各路量纲不敏感、抗单路极端值
+- **新增 `lib/embeddings.js`**：**默认关闭**的可选 embedding 层。`cosineSim`、`resolveSemanticConfig`、`embedTexts`（OpenAI 兼容 `/embeddings`，按内容哈希缓存到 `embeddings_cache.json`，可注入 `fetchImpl`/`cache` 便于离线测试）。关闭 / 无端点 / 网络失败 → 优雅退化为纯 BM25，永不抛错
+- **`tools/search.js`**：`runSearch` 新增可选 `semantic` 入参——提供时用 RRF 融合 BM25 + 语义 + 关系 + 记忆强度，否则保持原加权 BM25（**默认行为与检索评估集完全不变**）。tool `execute` 在开启且端点可用时：先 BM25 探测候选 → 批量 embed（缓存）→ RRF 重排；任意失败退化
+- **`DEFAULT_CONFIG` + manifest**：新增 `semanticSearchEnabled`(false) / `semanticEmbeddingBaseUrl` / `semanticEmbeddingApiKey` / `semanticEmbeddingModel`（manifest 暴露、隐私可见）；`semanticTopK`(50) / `rrfK`(60) 为高级 DEFAULT_CONFIG-only。control `set_config` 与 schema 同步
+- **隐私**：开启语义检索会把查询词与候选记忆文本发送到你配置的 embedding 端点，已在 README 隐私章节披露；默认关闭
+- **新增 `tests/rank-fusion.test.js`、`tests/semantic-search.test.js`**：RRF 数学、cosine、端点解析、`embedTexts` mock（缓存命中/HTTP 错误降级）、RRF 在 bm25/记忆强度对冲时由语义决定 top1。测试总数 215 → 227
+
+## 1.2.0
+
+MemFS 长期记忆视图（计划 §7.5）：
+
+- **新增 `lib/memfs.js`**：把当前长期记忆渲染成可读的 Markdown 文件树（`system/` 用户画像·硬约束·活跃项目、`projects/<project>.md`、`patterns/` 工作流·错误·偏好、`archive/deprecated.md`）。`buildMemFS` 为纯函数（返回 `{路径:内容}`），`generateMemFS` 负责落盘并写 `.index.json`（含指纹）。**派生只读视图，非源数据**——每次全量重建，安全清理残留
+- **`self_learning_control` 新增 `regenerate_memfs`**：从 patterns + facts 重建 MemFS
+- **`tools/doctor.js` 新增 `memfs_stale` 检查**：用 `fingerprintPatterns` 比对 memfs 视图与当前记忆，过期则建议 `regenerate_memfs`（仅在 memfs 已生成时提示）
+- **新增 `tests/memfs.test.js`**：文件树渲染、durable 偏好归类、项目分组、归档、指纹敏感性、磁盘重建幂等与残留清理、doctor 过期检测。测试总数 204 → 215
+
+## 1.1.0
+
+证据链与时间事实（让记忆可追溯、可覆盖、可解释）：
+
+- **新增 `lib/evidence.js`**：pattern/fact 的证据记录。`makeEvidence` / `attachEvidence`（按 hash 去重、上限 3、保留最新）。**隐私优先**：quote 截断到 ~160 字，对 API key / 邮箱 / 令牌 / 内联凭据脱敏，保存原文哈希而非敏感全文（计划 §8 风险行）
+- **新增 `lib/temporal.js`**：事实有效期与覆盖。`isActiveFact` / `activeFacts` / `applyFact`（同 subject+predicate+project 不同 object 时自动 supersede 旧事实：写 validTo + supersededBy，新事实 supersedes 记录被覆盖项；同值重述则刷新不重复）/ `factConflicts`
+- **新增 `lib/facts.js`**：`facts.json` 时间事实存储。`recordFact` 落盘并自动覆盖冲突事实；`factToMemoryItem` 把事实适配成检索 memory-item，有效期/覆盖映射到 gate 检查的字段——**被覆盖/过期的事实由同一准入 Gate 拒绝，旧值不再召回**
+- **pattern 写入 evidence**：`lib/pattern-detector.js` 在 workflow / preference / error 的创建与强化时附带脱敏证据；新建偏好/错误直接带初始 evidence
+- **`tools/search.js`**：合并 `facts.json` 活跃事实为检索候选（被覆盖事实经 Gate 过滤）；`evidencePreview` 改用 `lib/evidence.js` 的 `previewEvidence`，展示真实来源摘要
+- **`tools/doctor.js`**：`conflicting_facts` 改用 `temporal.factConflicts`（按项目作用域），与检索一致
+- **新增 `episodes.jsonl`**：每轮一条结构化情节（scope/tools/correction/summary）作为 provenance 流，纳入 30 天清理（`index.js`、`lib/observer.js`）
+- **新增 `tests/evidence.test.js`、`tests/temporal-facts.test.js`**：脱敏/去重/覆盖语义 + 「被覆盖事实不再召回」端到端。测试总数 190 → 204
+
+## 1.0.0
+
+记忆治理与诊断闭环（`self_learning_doctor`）：
+
+- **新增 `tools/doctor.js`**：只读健康检查工具 `self_learning_doctor`。纯函数 `diagnose()` 与磁盘读取分离，便于测试。检查项：`duplicate_patterns`（重复）、`conflicting_facts`（同 subject/predicate 多有效值，facts v1.1 生效）、`stale_auto_approved`（自动批准但长期未采纳）、`pending_preference_injection`（opt-in 开启且有未审核偏好，high）/`pending_preference_backlog`（堆积，info）、`proposal_backlog`（≥10 warning / ≥25 critical）、`skill_budget`（可注入提示超 `maxSkillTokens`）、`privacy_retention`（日志超 30 天）、`scope_leakage`（可注入 pattern 横跨多项目）、`orphan_relations`（关系边指向不存在的 pattern）、`evidence_missing`（高分缺证据，仅证据特性启用后）
+- **输出 Good / Warning / Critical**：100 分起按严重度扣分；critical 或 <50 → Critical，high/warning 或 <80 → Warning，否则 Good。支持 `format=text`（默认）/ `format=json`。**只诊断，不修改任何文件**
+- **`self_learning_control` 新增 `doctor` action**：`action=doctor [format=json]` 复用同一诊断核心，作为治理建议入口
+- manifest 注册 `onToolCall:self_learning_doctor`；install.cjs 纳入 `tools/doctor.js`；README 新增「健康检查」章节
+- **新增 `tests/doctor.test.js`**（17 项）：逐项隔离触发每个检查 + 评分/状态分级 + formatReport。测试总数 173 → 190
+
+## 0.9.0
+
+作用域检索升级（Scope + 倒排索引 + 准入 Gate + 检索评估）：
+
+- **新增 `lib/scope.js`**：`inferScope` / `scopeMatches` / `taskTypeMatches` / `isCrossScopeAllowed`。从会话/工作区路径推断 `{ project, taskType, source }`，跳过 `sessions/<id>` 一类的会话 id 段；project 不可判定时回退 `general`（未作用域通配）
+- **新增 `lib/memory-index.js`**：纯 JS BM25 倒排索引，**CJK-aware 分词**（单字 + 相邻二元组），无外部依赖、Node ≥ 18。替代计划中的 SQLite FTS5——FTS5 默认不切分中文，`排版` 无法命中 `论文排版`；二元组方案无需分词器即可稳定中文召回
+- **新增 `lib/memory-gate.js`**：记忆准入边界。`admitMemory` 拒绝 rejected / ephemeral / 过期(`validTo`) / 已废弃(`supersededBy`) / 跨项目(非 global) / 低置信(`confidence` 低于阈值)；跨任务类型不拒绝而降权
+- **重构 `tools/search.js`**：流程改为 `CJK 分词+同义词 → BM25 Top-K → Gate → relation+memoryStrength+scope 重排 → 低置信拒绝 → Top N`。新增 `project` 检索参数；结果新增 `scope` / `evidencePreview` / `gateReason` / `scoreBreakdown` 字段。低置信拒绝额外剔除「仅单字 CJK 巧合」匹配（如 `乱码` 误命中 `代码` 的 `码`），保留二元组召回
+- **pattern 写入 scope**：`lib/observer.js` 在 flushTurn 推断 scope 并写入经验对象（取代硬编码的 `project: "general"`）；`lib/pattern-detector.js` 将 scope 标记到 workflow / preference / error pattern 上
+- **`DEFAULT_CONFIG` 新增检索调优键**（仅高级，不在 manifest 暴露）：`retrievalCandidateLimit` / `minRetrievalRelative` / `crossTaskPenalty` / `minRetrievalConfidence`
+- **新增 `tests/scope-gate.test.js`、`tests/retrieval-eval.test.js`**：作用域/Gate 单元测试 + 带标注语料的检索评估（Hit@1 / MRR / 跨项目泄漏率 / 误召回率）。测试总数 133 → 173
+- 不引入向量库、不接外部服务（计划第 11.5 条）
+
+## 0.8.2
+
+发布前一致性与隐私默认收敛：
+
+- **`includePendingPreferences` 默认改为 `false`**（隐私保守化）：未审核的用户纠正不再默认注入 SKILL.md，仅保留为可检索状态，需经审批或反复强化越过置信阈值后才注入。高级单用户可显式开启（`lib/common.js`、`manifest.json`、README 配置表新增该行说明）
+- **新增 `tests/config-consistency.test.js`**：锁定 `DEFAULT_CONFIG` ↔ `manifest.json` ↔ README 配置表三处默认值一致，防止类似 `modelAdvisorMinIntervalMinutes`（60/180）在某一处漂移而其它处未同步。共享键默认值不一致即测试失败
+- 复核确认两项计划中的修复已在既有版本落地，本次无需改动：`modelAdvisorMinIntervalMinutes` 三处已一致为 `60`（v0.8.0 由 180 改回）；日志清理已按 30 天窗口严格执行、不再有体积阈值（`index.js` `pruneDataFiles`）
+- 测试总数 128 → 130
+
 ## 0.8.1
 
 自我学习逻辑修复（13 处）：

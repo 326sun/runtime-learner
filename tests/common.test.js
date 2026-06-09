@@ -151,7 +151,12 @@ describe("isInjectable", () => {
 
   it("legacy pending preference is injectable when includePendingPreferences is on", () => {
     const pattern = { status: "pending", type: "preference", score: 0, count: 1, fix: "do this" };
-    assert.equal(isInjectable(pattern, config), true);
+    assert.equal(isInjectable(pattern, { ...config, includePendingPreferences: true }), true);
+  });
+
+  it("legacy pending preference is gated off by the default (includePendingPreferences off)", () => {
+    const pattern = { status: "pending", type: "preference", score: 0, count: 1, fix: "do this" };
+    assert.equal(isInjectable(pattern, config), false);
   });
 
   it("reinforced core preference is injectable when includePendingPreferences is on", () => {
@@ -260,7 +265,7 @@ describe("buildSkillMdFromPatterns", () => {
       lastSeen: new Date().toISOString(),
       fix: "Transient correction only",
     });
-    const md = buildSkillMdFromPatterns(patterns, config, { turnCount: 10, dataDir: "/tmp/test" });
+    const md = buildSkillMdFromPatterns(patterns, { ...config, includePendingPreferences: true }, { turnCount: 10, dataDir: "/tmp/test" });
     assert.ok(md.includes("# Runtime Self-Learning"));
     assert.ok(md.includes("Verified User Preferences"));
     assert.ok(md.includes("Always use tabs"));
