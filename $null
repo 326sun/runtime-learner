@@ -1,0 +1,6 @@
+error: pathspec ''$null'' did not match any file(s) known to git
+error: pathspec ';' did not match any file(s) known to git
+error: pathspec 'git' did not match any file(s) known to git
+error: pathspec 'push' did not match any file(s) known to git
+error: pathspec 'origin' did not match any file(s) known to git
+error: pathspec 'main' did not match any file(s) known to git

@@ -67,4 +67,4 @@ npm run install-plugin
 ## 已知问题
 
 - 2 个待处理 `code_patch` 提案（高风险，需人工审批，不会自动写代码）
-- `modelAdvisorEnabled` 当前为 `true`，会将归纳后的 workflow/error/usage 模式发往 deepseek-v4-flash（用户已知情并配置）
+- `modelAdvisorEnabled` 当前为 `true`，会将归纳后的 workflow/error/usage 模式发往 deepseek-v4-flash。该状态为用户本机运行配置，不代表插件默认配置；插件默认 `modelAdvisorEnabled=false`

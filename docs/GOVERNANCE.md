@@ -31,11 +31,17 @@ Proposal 创建后自动入队，记录：
 
 ### Validation Gate
 
-Proposal apply 前必须通过：
-- `skill_patch`：检查头部 `# Runtime Self-Learning` + token budget
-- `config_patch`：检查 payload 存在性
-- `code_patch`：明确阻止自动 apply
-- doctor 状态为 `critical` 时阻止所有 apply
+Proposal apply 前必须通过。`code_patch` 始终禁止自动 apply。`skill_patch` 检查头部 `# Runtime Self-Learning` + token budget。
+
+`config_patch` 经过完整验证链：
+- payload 必须是 plain object
+- key 必须在 `DEFAULT_CONFIG` 白名单内（未知 key 拒绝）
+- 类型校验（expected type vs actual type）
+- number 类型校验范围（`NUMERIC_RANGES`）
+- 枚举值检查（`governanceProfile`、`modelAdvisorSource` 等）
+- conservative profile 下阻断高风险配置变更（`CONSERVATIVE_BLOCKS`）
+
+所有类型在 doctor 状态为 `critical` 时阻止 apply。
 
 ### Event Log
 
