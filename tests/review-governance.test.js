@@ -13,13 +13,19 @@ import { DEFAULT_CONFIG, writeJson } from "../lib/common.js";
 import { execute as executeControl } from "../tools/control.js";
 
 const tmpDir = path.join(os.tmpdir(), `learner-review-test-${Date.now()}`);
+const savedHanaHome = process.env.HANA_HOME;
 
 describe("review governance", () => {
   beforeEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
     fs.mkdirSync(tmpDir, { recursive: true });
+    delete process.env.HANA_HOME;
   });
-  after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  after(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    if (savedHanaHome === undefined) delete process.env.HANA_HOME;
+    else process.env.HANA_HOME = savedHanaHome;
+  });
 
   it("creates a review item and diff preview for skill_patch proposals", () => {
     const skillPath = path.join(tmpDir, "plugin", "skills", "self-learning", "SKILL.md");
