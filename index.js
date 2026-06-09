@@ -38,7 +38,6 @@ const SKILL_REFRESH_MIN_MS = 10_000;
 const MAX_SKILL_HISTORY = 20;
 const MAX_ACTIVITY_ENTRIES = 500;
 const LOG_RETENTION_DAYS = 30;
-const MAX_LOG_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB — skip prune for small files
 const CODE_PROPOSAL_MIN_COUNT = 3;
 
 const runtimeState = {
@@ -192,13 +191,13 @@ async function pruneDataFiles() {
   lastPruneTs = now;
   const cutoff = Date.now() - LOG_RETENTION_DAYS * 86_400_000;
 
-  // Prune JSONL files: drop lines older than retention window
+  // Prune JSONL files: drop lines older than retention window.
+  // Every log file is pruned regardless of size — the 30-day retention
+  // promise in the privacy docs takes priority over I/O optimisation.
   const logFiles = [EXPERIENCE_LOG, TURNS_FILE, ERROR_LOG, ACTIVITY_LOG];
   for (const file of logFiles) {
     try {
       if (!fs.existsSync(file)) continue;
-      const stat = await fs.promises.stat(file);
-      if (stat.size <= MAX_LOG_SIZE_BYTES) continue;
       const text = await fs.promises.readFile(file, "utf-8");
       const lines = text.trim().split("\n").filter(Boolean);
       const kept = [];
