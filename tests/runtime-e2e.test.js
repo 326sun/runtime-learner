@@ -33,15 +33,24 @@ const skillPath = path.join(pluginDir, "skills", "self-learning", "SKILL.md");
 let RuntimePlugin;
 let previousHome;
 
-function resetDisk(config = null) {
-  fs.rmSync(homeDir, { recursive: true, force: true });
-  fs.rmSync(pluginDir, { recursive: true, force: true });
+// The plugin fire-and-forgets pruneActivityLog() (index.js), so a background
+// async write to activity_log.jsonl can still hold the file when we tear down.
+// On Linux that's fine (open files unlink freely); on Windows it's an EPERM/
+// ENOTEMPTY lock. We must use the *async* fs.promises.rm here: its retryDelay
+// yields to the event loop so the pending prune can finish and release the
+// handle. Synchronous fs.rmSync would block the loop during its retry sleep,
+// so the prune never completes — which is why this only failed on Win 18/20.
+const RM_OPTS = { recursive: true, force: true, maxRetries: 10, retryDelay: 50 };
+
+async function resetDisk(config = null) {
+  await fs.promises.rm(homeDir, RM_OPTS);
+  await fs.promises.rm(pluginDir, RM_OPTS);
   fs.mkdirSync(pluginDir, { recursive: true });
   if (config) writeJson(configPath, config);
 }
 
 async function startRuntime({ config = null } = {}) {
-  resetDisk(config);
+  await resetDisk(config);
   const bus = new FakeEventBus();
   const ctx = createFakeRuntimeContext({ pluginDir, bus });
   const plugin = new RuntimePlugin();
@@ -61,14 +70,14 @@ describe("runtime E2E with fake Hanako EventBus", () => {
     RuntimePlugin = (await import(`${pathToFileURL(path.join(root, "index.js")).href}?runtime_e2e=${Date.now()}`)).default;
   });
 
-  beforeEach(() => {
-    resetDisk();
+  beforeEach(async () => {
+    await resetDisk();
   });
 
-  after(() => {
+  after(async () => {
     if (previousHome == null) delete process.env.HANA_HOME;
     else process.env.HANA_HOME = previousHome;
-    fs.rmSync(tempRoot, { recursive: true, force: true });
+    await fs.promises.rm(tempRoot, RM_OPTS);
   });
 
   it("learns a repeated workflow and refreshes the generated skill", async () => {
