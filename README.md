@@ -16,10 +16,12 @@
 观察你的交互，从中提取可复用的经验，自动注入到 Hanako Agent 的后续会话中。重复的工作流、反复触发的错误、明确的纠正——全部本地处理，默认不外发任何数据。
 
 ```powershell
-git clone https://github.com/326sun/hanako-runtime-learner.git
+git clone --branch v1.6.1 https://github.com/326sun/hanako-runtime-learner.git
 cd hanako-runtime-learner
 npm run install-plugin        # 启用即运行
 ```
+
+升级：`git fetch --tags && git checkout v1.6.1 && npm run install-plugin`
 
 ---
 
