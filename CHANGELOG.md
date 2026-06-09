@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.6.0
+
+策略配置档与本地审计包：
+
+- **新增 `governanceProfile` 配置**：默认 `balanced`；新增 conservative / balanced / autonomous 三种治理策略，集中调整自动注入、自动批准、pending preference、严格审核与通知等行为。外部模型顾问与语义检索在所有配置档中仍保持关闭，必须显式配置才会外发。
+- **新增 `lib/policy-profiles.js`**：提供 `listPolicyProfiles()` 与 `applyPolicyProfile()`，保证策略切换可测试、可审计、可复用。
+- **`self_learning_control` 新增 `list_policy_profiles` / `set_policy_profile`**：可直接列出当前策略与可用模式，或一键切换治理策略；切换时写入 append-only `policy.applied` 事件。
+- **新增 `lib/audit-bundle.js` 与 `export_audit_bundle`**：导出本地审计包（`audit-bundle.json` + `audit-report.md`），汇总 doctor、scope 分布、proposal/review 状态、event replay summary，并自动脱敏 API key/token/secret/password 字段。
+- 新增 `tests/policy-audit.test.js`，测试总数 237 → 241。
+
 ## 1.5.0
 
 严格审核模式与事件回放收口：

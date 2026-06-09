@@ -13,6 +13,8 @@ import { writeSkillIfChanged } from "../lib/skill-lifecycle.js";
 import { runDoctorFromDisk, formatReport } from "./doctor.js";
 import { generateMemFS } from "../lib/memfs.js";
 import { loadFacts } from "../lib/facts.js";
+import { applyPolicyProfile, listPolicyProfiles } from "../lib/policy-profiles.js";
+import { buildAuditBundle, exportAuditBundle } from "../lib/audit-bundle.js";
 
 const MAX_SKILL_HISTORY = 20;
 
@@ -55,7 +57,7 @@ const tool = defineTool({
     properties: {
       action: {
         type: "string",
-        enum: ["status", "list", "approve", "reject", "set_config", "rollback", "regenerate_skill", "regenerate_memfs", "run_model_advisor", "list_proposals", "show_proposal", "apply_proposal", "reject_proposal", "review_panel", "preview_proposal", "validate_proposal", "approve_review", "reject_review", "apply_review", "list_reviews", "list_events", "event_summary", "doctor", "diagnose_bus"],
+        enum: ["status", "list", "approve", "reject", "set_config", "rollback", "regenerate_skill", "regenerate_memfs", "run_model_advisor", "list_proposals", "show_proposal", "apply_proposal", "reject_proposal", "review_panel", "preview_proposal", "validate_proposal", "approve_review", "reject_review", "apply_review", "list_reviews", "list_events", "event_summary", "doctor", "list_policy_profiles", "set_policy_profile", "export_audit_bundle", "diagnose_bus"],
         description: "Control action to run.",
       },
       id: { type: "string", description: "Pattern id for approve/reject." },
@@ -63,6 +65,7 @@ const tool = defineTool({
       reason: { type: "string", description: "Optional reason for proposal rejection." },
       status: { type: "string", description: "Optional proposal status filter: pending, applied, or rejected." },
       format: { type: "string", enum: ["text", "json"], description: "Output format for the doctor action. Default text." },
+      governanceProfile: { type: "string", enum: ["conservative", "balanced", "autonomous"], description: "Governance policy profile to apply." },
       limit: { type: "number", description: "Maximum number of events/reviews to return for list actions." },
       autoInjectHighConfidence: { type: "boolean", description: "Whether high-confidence pending patterns can be injected automatically." },
       autoApproveHighConfidence: { type: "boolean", description: "Whether high-confidence pending patterns are automatically approved (no manual review needed)." },
@@ -331,6 +334,55 @@ const tool = defineTool({
       const report = runDoctorFromDisk(p.learnerDir);
       if (input.format === "json") return JSON.stringify(report, null, 2);
       return formatReport(report);
+    }
+
+    if (action === "list_policy_profiles") {
+      return JSON.stringify({ ok: true, profiles: listPolicyProfiles(), current: config.governanceProfile || "balanced" }, null, 2);
+    }
+
+    if (action === "set_policy_profile") {
+      const profileName = input.governanceProfile || input.id || "balanced";
+      const result = applyPolicyProfile(config, profileName);
+      if (!result.ok) throw new Error(result.error);
+      writeJson(p.configPath, result.config);
+      appendEvent(p.learnerDir, {
+        type: "policy.applied",
+        entityType: "config",
+        entityId: "governanceProfile",
+        summary: `Applied governance profile: ${result.profile}`,
+        data: { profile: result.profile, changed: result.changed },
+      });
+      regenerateSkill(p, patterns, result.config);
+      return JSON.stringify({ ok: true, profile: result.profile, changed: result.changed, config: result.config }, null, 2);
+    }
+
+    if (action === "export_audit_bundle") {
+      const proposals = listProposals(p.learnerDir, { limit: 500 });
+      const reviews = listReviews(p.learnerDir, { limit: 500 });
+      const events = readEvents(p.learnerDir, { limit: input.limit || 5000 });
+      const facts = loadFacts(p.learnerDir);
+      const doctorReport = runDoctorFromDisk(p.learnerDir);
+      const version = (() => { try { return JSON.parse(fs.readFileSync(path.join(p.pluginDir, "package.json"), "utf-8")).version; } catch { return "unknown"; } })();
+      const bundle = buildAuditBundle({
+        version,
+        config,
+        patterns,
+        facts,
+        proposals,
+        reviews,
+        events,
+        eventSummary: replayEventState(events),
+        doctor: doctorReport,
+      });
+      const written = exportAuditBundle(p.learnerDir, bundle);
+      appendEvent(p.learnerDir, {
+        type: "audit.exported",
+        entityType: "audit",
+        entityId: path.basename(written.dir),
+        summary: "Exported local audit bundle",
+        data: { dir: written.dir, doctorStatus: doctorReport.status },
+      });
+      return JSON.stringify({ ok: true, ...written, summary: bundle.summary }, null, 2);
     }
 
     if (action === "diagnose_bus") {

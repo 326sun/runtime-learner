@@ -4,11 +4,11 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.5.0-blue" alt="version">
+  <img src="https://img.shields.io/badge/version-1.6.0-blue" alt="version">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="license">
   <img src="https://img.shields.io/badge/platform-Hanako%20Agent%20v0.293%2B-orange" alt="platform">
   <img src="https://img.shields.io/badge/node-%E2%89%A518-brightgreen" alt="node">
-  <img src="https://img.shields.io/badge/tests-237%2F237-success" alt="tests">
+  <img src="https://img.shields.io/badge/tests-241%2F241-success" alt="tests">
 </p>
 
 ---
@@ -17,7 +17,7 @@
 
 Hanako 插件。本地观察你的交互习惯——重复的工作流、反复触发的错误、明确的纠正——从中提取可复用的经验，自动注入到 Agent 的后续会话中。
 
-v1.5.0 在 v1.4 学习治理链路之上增加严格审核模式与事件回放能力：可选 `requireReviewForAutoApply` 阻止低风险 auto-apply 在未批准 Review 前上线，`apply_review` 将审核队列变成可执行入口，`event_summary` 可从 append-only 事件流回放实体状态。
+v1.6.0 在严格审核与事件回放之上增加治理策略配置档与本地审计包导出：`set_policy_profile` 可在 conservative / balanced / autonomous 三种模式间切换，`export_audit_bundle` 会生成脱敏 JSON + Markdown 审计报告，方便本地排查、合并前 review 或向其他 Agent 交接。
 
 ---
 
@@ -52,6 +52,7 @@ hanako-runtime-learner_self_learning_stats
 | **语义检索（可选）** | **v1.3** | 可选 embedding（默认关闭、带磁盘缓存）、RRF 融合 BM25+语义+关系+记忆强度、关闭时退化为纯本地 BM25 |
 | **学习治理** | **v1.4** | Review Queue、Diff Preview、Validation Gate、append-only Event Log、Skill Registry、Tool-call Repair |
 | **严格审核与回放** | **v1.5** | `requireReviewForAutoApply` 严格审核模式、`apply_review` 审核后应用、`event_summary` 事件回放状态 |
+| **策略与审计** | **v1.6** | governance policy profiles（conservative/balanced/autonomous）与本地 audit bundle 导出 |
 
 ---
 
@@ -158,7 +159,7 @@ CJK 感知分段：遍历每个字符，CJK 统一汉字/日文假名/韩文 →
 | `self_learning_activity` | 查看近 N 天学习活动时间线 |
 | `self_learning_stats` | 统计：turns / errors / patterns / 配置 |
 | `self_learning_report` | 结构化学习报告（含待处理提案） |
-| `self_learning_control` | 审批 pattern、管理 proposal、review queue、diff preview、validation gate、事件查看、健康检查与 MemFS 重建 |
+| `self_learning_control` | 审批 pattern、管理 proposal、review queue、diff preview、validation gate、事件查看、策略配置档、审计包导出、健康检查与 MemFS 重建 |
 | `self_learning_open_dir` | 文件管理器中打开 `~/.hanako/self-learning/` |
 
 ---
@@ -171,6 +172,7 @@ CJK 感知分段：遍历每个字符，CJK 统一汉字/日文假名/韩文 →
 
 | 键 | 默认 | 说明 |
 |---|---|---|
+| `governanceProfile` | `balanced` | 治理策略配置档：`conservative` / `balanced` / `autonomous`。可用 `self_learning_control action=set_policy_profile governanceProfile=conservative` 切换。 |
 | `autoInjectHighConfidence` | `true` | 高置信 pattern 自动注入 |
 | `autoApproveHighConfidence` | `true` | 高置信 pattern 跳过审批 |
 | `minInjectScore` | `8` | 注入最低衰减分数 |
