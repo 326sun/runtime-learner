@@ -114,7 +114,7 @@ if (fs.existsSync(PLUGIN_DEST)) {
 // ── Copy ──
 console.log("\n[3/4] Copy plugin...");
 const filesToCopy = ["manifest.json", "index.js", "package.json", "README.md", "ARCHITECTURE.md", "INSTALL.md", "LICENSE"];
-const dirsToCopy = ["tools", "skills", "lib"];
+const dirsToCopy = ["tools", "skills", "lib", "docs"];
 
 fs.mkdirSync(PLUGIN_DEST, { recursive: true });
 for (const file of filesToCopy) {

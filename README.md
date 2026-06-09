@@ -124,66 +124,7 @@ BM25 倒排索引 → 准入 Gate → 关系/记忆强度重排 → 可选语义
 
 ## 治理
 
-学习结果进入可审计治理链：
-
-```
-Proposal → Review Queue → Diff Preview → Validation Gate → Apply / Reject → Event Log → Rollback
-```
-
-- **Proposal 两级风险**：`skill_patch`（低风险，可自动应用）与 `code_patch`（高风险，永不自动写代码）
-- **Review Queue**：proposal 创建后自动入队，记录来源 pattern、diff 预览、validation 状态
-- **Validation Gate**：`config_patch` 经过 key 白名单、类型、范围和高风险配置检查；`code_patch` 始终禁止自动应用
-- **Event Log**：`event_log.jsonl` 是本地 append-only 事件流；新增 hash chain，可用 `verify_event_log` 检查连续性
-- **Doctor 健康检查**：14 项诊断（策略一致性、重复/冲突/过期记忆、提案堆积、作用域泄漏、孤儿关系等），输出 Good/Warning/Critical
-- **策略配置档**：`conservative`（审核优先）/ `balanced`（默认）/ `autonomous`（单用户快速路径），一键切换
-- **审计包导出**：脱敏 JSON + Markdown，汇总 doctor、scope 分布、proposal/review 状态
-
----
-
-## 推荐安全配置
-
-个人本地默认：
-
-```text
-self_learning_control action=set_policy_profile governanceProfile=balanced
-```
-
-高安全审核模式：
-
-```text
-self_learning_control action=set_policy_profile governanceProfile=conservative
-```
-
-单用户快速模式：
-
-```text
-self_learning_control action=set_policy_profile governanceProfile=autonomous
-```
-
-## 治理操作示例
-
-```text
-# 查看待审核项
-self_learning_control action=review_panel
-
-# 预览 proposal diff
-self_learning_control action=preview_proposal proposalId=...
-
-# 验证 proposal
-self_learning_control action=validate_proposal proposalId=...
-
-# 批准 review
-self_learning_control action=approve_review proposalId=...
-
-# 应用已批准 review
-self_learning_control action=apply_review proposalId=...
-
-# 验证本地事件日志 hash chain
-self_learning_control action=verify_event_log
-
-# 导出审计包
-self_learning_control action=export_audit_bundle
-```
+学习结果进入可审计治理链——Proposal → Review Queue → Validation Gate → Event Log。Doctor 健康检查、策略配置档、MemFS 视图、审计包导出与操作示例详见 [`docs/GOVERNANCE.md`](docs/GOVERNANCE.md)。
 
 ---
 
