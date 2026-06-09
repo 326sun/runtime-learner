@@ -175,7 +175,7 @@ CJK 感知分段：遍历每个字符，CJK 统一汉字/日文假名/韩文 →
 |---|---|---|
 | `modelAdvisorEnabled` | `false` | 启用后台整理（**需显式开启，会外发数据，见下方「隐私」**） |
 | `modelAdvisorSource` | `official` | official / private / off |
-| `modelAdvisorMinIntervalMinutes` | `180` | 最小间隔 |
+| `modelAdvisorMinIntervalMinutes` | `60` | 最小间隔 |
 | `modelAdvisorMaxTokens` | `500` | 单次最大输出 |
 
 ---
@@ -194,7 +194,7 @@ CJK 感知分段：遍历每个字符，CJK 统一汉字/日文假名/韩文 →
 - 随时可用 `self_learning_open_dir` 打开目录查看或手动删除；删除 `~/.hanako/self-learning/` 即可清空全部学习数据。
 
 **是否离开本机**
-- **默认不外发。** 只有当你显式将 `modelAdvisorEnabled` 设为 `true` 时，插件才会把**归纳后的 workflow / error / usage 模式**（受速率限制，默认每 180 分钟一次）发送到你配置的小模型端点。
+- **默认不外发。** 只有当你显式将 `modelAdvisorEnabled` 设为 `true` 时，插件才会把**归纳后的 workflow / error / usage 模式**（受速率限制，默认每 60 分钟一次）发送到你配置的小模型端点。
 - **`preference` 与 `durable` 模式（即用户纠正原文、`pin_memory` 内容）永不外发**，仅参与本地检索与 SKILL.md 注入。
 - 关闭外发：将 `modelAdvisorEnabled` 设为 `false` 或 `modelAdvisorSource` 设为 `off`。
 

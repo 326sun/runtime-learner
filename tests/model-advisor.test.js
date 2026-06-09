@@ -49,7 +49,7 @@ describe("model advisor", () => {
       modelAdvisorBaseUrl: "https://api.example.com",
       modelAdvisorModel: "small-1",
       modelAdvisorApiKey: "sk-test",
-      modelAdvisorMinIntervalMinutes: 180,
+      modelAdvisorMinIntervalMinutes: 60,
       minAdvisorNewPatterns: 0,
     };
 
