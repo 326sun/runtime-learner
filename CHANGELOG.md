@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.1
+
+- **skill_patch 内容去重门禁**：`refreshSkill` 和 `writeSkillIfChanged` 现在比较 SKILL.md 时剔除自动递增的 `Observed N turns` 行。仅在 hints/工作流/偏好等实质性内容变化时才生成 skill_patch proposal 和备份，消除每次 session 边界的无效 I/O 噪音。
+
 ## 1.8.0
 
 接入 Hanako 0.305+ 官方插件接口（旧版本全部优雅回退，无行为破坏）：

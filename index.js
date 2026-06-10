@@ -439,15 +439,15 @@ export default definePlugin({
         turnCount: detector.turnCount,
         dataDir: DATA_DIR,
       });
-      // Only touch the skill file when the rendered content actually changed.
-      // Snapshotting/applying unconditionally filled skill_history with
-      // identical copies (making rollback useless) and spawned a fresh .bak per
-      // call via applyProposal. Comparing first makes both side effects fire
-      // only on a real change. lastSkillRefresh is still advanced so the
-      // throttle holds regardless.
+      // Only touch the skill file when the rendered content actually changed
+      // beyond the auto-incremented turn counter. Stripping the "Observed N
+      // turns…" leader line avoids a spurious skill_patch + backup + review on
+      // every session boundary when the only delta is the turn count.
+      // lastSkillRefresh is still advanced so the throttle holds regardless.
       let current = null;
       try { current = fs.readFileSync(skillPath, "utf-8"); } catch {}
-      if (current !== content) {
+      const skipObservedLine = (s) => (s || "").replace(/^Observed \d+ turns,.*\n/m, "");
+      if (skipObservedLine(current) !== skipObservedLine(content)) {
         snapshotSkill(skillPath, HISTORY_DIR, { keep: MAX_SKILL_HISTORY });
         const triggerPatternIds = allPatterns.filter(p => p.injectable).slice(0, 8).map(p => p.id);
         const proposal = buildSkillPatchProposal({
