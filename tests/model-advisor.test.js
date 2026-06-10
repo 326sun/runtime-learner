@@ -134,4 +134,82 @@ describe("model advisor", () => {
       assert.equal(oneNew.skipped, true);
     });
   });
+
+  describe("model:sample-text bus sampling (Hanako ≥ 0.305)", () => {
+    const officialConfig = {
+      modelAdvisorEnabled: true,
+      modelAdvisorSource: "official",
+      modelAdvisorMinIntervalMinutes: 60,
+      minAdvisorNewPatterns: 0,
+    };
+    const mkPattern = (id) => ({ id, type: "error", status: "pending", count: 4, score: 8, desc: "d", fix: "" });
+    const busCtx = (request) => ({
+      bus: {
+        getCapability: (type) => (type === advisor.SAMPLE_TEXT_CAPABILITY ? { available: true } : null),
+        hasHandler: () => false,
+        request,
+      },
+    });
+
+    beforeEach(() => {
+      fs.rmSync(path.join(learnerDir(), "model_advice_state.json"), { force: true });
+      fs.rmSync(path.join(learnerDir(), "model_advice.json"), { force: true });
+    });
+
+    it("resolveAdvisorConfig prefers bus sampling without any credentials", () => {
+      const resolved = advisor.resolveAdvisorConfig(officialConfig, busCtx(async () => ({})));
+      assert.equal(resolved.ok, true);
+      assert.equal(resolved.config.useBusSampling, true);
+      assert.equal(resolved.config.modelAdvisorResolvedSource, "official-bus");
+    });
+
+    it("samples via the bus and never touches fetch or credentials", async () => {
+      let fetchCalled = false;
+      globalThis.fetch = async () => { fetchCalled = true; throw new Error("should not fetch"); };
+      let busPayload = null;
+      const ctx = busCtx(async (type, payload) => {
+        assert.equal(type, advisor.SAMPLE_TEXT_CAPABILITY);
+        busPayload = payload;
+        return { text: JSON.stringify({ suggestions: [{ patternId: "error:x", title: "t", advice: "a", risk: "low" }] }), model: "utility-1" };
+      });
+      const res = await advisor.runModelAdvisor({ config: officialConfig, patterns: [mkPattern("error:x")], ctx });
+      assert.equal(res.ok, true);
+      assert.equal(fetchCalled, false);
+      assert.equal(res.advice.source, "official-bus");
+      assert.equal(res.advice.model, "utility-1");
+      assert.equal(res.advice.suggestions.length, 1);
+      assert.equal(busPayload.operation, "self-learning-model-advisor");
+      assert.ok(Array.isArray(busPayload.messages) && busPayload.messages.length === 2);
+    });
+
+    it("falls back to the configured HTTP endpoint when bus sampling fails", async () => {
+      let fetchCalls = 0;
+      globalThis.fetch = async () => {
+        fetchCalls += 1;
+        return { ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify({ suggestions: [] }) } }] }) };
+      };
+      const ctx = busCtx(async () => { throw new Error("session busy"); });
+      const cfg = {
+        ...officialConfig,
+        modelAdvisorBaseUrl: "https://api.example.com",
+        modelAdvisorModel: "small-1",
+        modelAdvisorApiKey: "sk-test",
+      };
+      const res = await advisor.runModelAdvisor({ config: cfg, patterns: [mkPattern("error:y")], ctx });
+      assert.equal(res.ok, true);
+      assert.equal(fetchCalls, 1);
+      assert.equal(res.advice.source, "private-fallback");
+    });
+
+    it("surfaces the bus error when no HTTP fallback is configured", async () => {
+      let fetchCalled = false;
+      globalThis.fetch = async () => { fetchCalled = true; throw new Error("should not fetch"); };
+      const ctx = busCtx(async () => { throw new Error("NO_HANDLER"); });
+      await assert.rejects(
+        () => advisor.runModelAdvisor({ config: officialConfig, patterns: [mkPattern("error:z")], ctx }),
+        /NO_HANDLER/
+      );
+      assert.equal(fetchCalled, false);
+    });
+  });
 });

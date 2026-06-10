@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.8.0
+
+接入 Hanako 0.305+ 官方插件接口（旧版本全部优雅回退，无行为破坏）：
+
+- **Model advisor 改走官方 `model:sample-text` 采样**：宿主具备该 EventBus 能力时（Hanako ≥ 0.305），后台整理直接让宿主调用用户配置的 utility 模型——provider 凭证不再经过插件。原有链路（解析 `preferences.json` / `added-models.yaml` 抓取 OpenAI 兼容端点凭证）降级为旧版本回退；总线采样失败时单次回退到 HTTP 路径（官方凭证 → 备用私有端点）。`model_advice.json` 的 `source` 新增 `official-bus` 取值。
+- **提案通知附带单轮隐形上下文**：`session:send` 在宿主声明支持 `context` 时（按 capability inputSchema 探测），通知消息附带 `context.beforeUser` 的结构化提案摘要（仅 id/type/risk/title/reason/triggerPatternIds，绝不含原始用户文本），代理可在同轮解释提案而无需工具往返；旧宿主自动省略。
+- **manifest 对齐当前插件契约**：`capabilities` 从无效的对象写法改为文档规定的数组写法并声明 `model.sample`；`minAppVersion` 从 `0.0.0` 校准为文档承诺的 `0.293.0`。
+- **`diagnose_bus` 增强**：诊断输出新增 `sampleTextCap`，便于确认宿主是否暴露官方采样能力。
+- **收紧 high-risk `code_patch` 提案门槛**：仅明确的 error pattern 可生成 code patch；`error:unknown` 与全部 usage advisory（如 large-context / failed-request）只保留为诊断或工作流提示，避免低证据误报污染 Review Queue。
+- 新增总线采样与 code patch gate 测试（能力解析、零凭证采样、HTTP 回退、无回退时透传错误、unknown error / usage advisory 不生成 code patch）。
+
 ## 1.7.1
 
 代码审查后的一致性与健壮性修复（无行为破坏，纯增量）：

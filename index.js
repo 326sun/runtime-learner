@@ -14,7 +14,7 @@ import path from "path";
 import { DEFAULT_CONFIG, learnerDir, readJson, writeJson, describeOfficialUtilityModel, countJsonl, buildSkillMdFromPatterns, cleanupTempFiles } from "./lib/common.js";
 import { definePlugin } from "./lib/hana-runtime-compat.js";
 import { runModelAdvisor } from "./lib/model-advisor.js";
-import { applyProposal, buildCodePatchProposal, buildSkillPatchProposal } from "./lib/proposals.js";
+import { applyProposal, buildCodePatchProposal, buildSkillPatchProposal, isActionableCodePatchPattern } from "./lib/proposals.js";
 import { usageModelKey, usageTotalTokens, summarizeUsageEntry, updateUsageSummary, snapshotHostCapabilities, USAGE_SUMMARY_FILE } from "./lib/usage-pipeline.js";
 import { normalizeToolName, safeText, toolCategory, shortHash, preferencePatternId, stableKey, isUsageFailure, TASK_SIGS, ERR_PATTERNS, CORRECTION_STRONG, CORRECTION_WEAK, classifyTask, classifyError, extractCorrectionFromUserText, sanitizeAdvice, usageDedupKey, normalizeSeenIds, absorbDiskPatternState } from "./lib/helpers.js";
 import { SessionTurn } from "./lib/session-turn.js";
@@ -311,11 +311,26 @@ export default definePlugin({
       return true;
     };
 
-    const sendSessionMessage = async (sessionPath, text, retries = 3) => {
+    // Hanako ≥ 0.305: session:send accepts a per-turn `context` block
+    // (system/beforeUser/afterUser) that is injected into the model request
+    // without polluting the visible message. Probe the capability schema so we
+    // only attach it on hosts that declare support.
+    const sessionSendSupportsContext = () => {
+      try {
+        const capability = ctx.bus.getCapability?.("session:send");
+        return !!capability?.inputSchema?.properties?.context;
+      } catch {
+        return false;
+      }
+    };
+
+    const sendSessionMessage = async (sessionPath, text, retries = 3, context = null) => {
       if (!sessionPath || !text || !canSendSessionMessage()) return false;
+      const payload = { sessionPath, text };
+      if (context && sessionSendSupportsContext()) payload.context = context;
       for (let i = 0; i < retries; i++) {
         try {
-          await ctx.bus.request("session:send", { sessionPath, text });
+          await ctx.bus.request("session:send", payload);
           return true;
         } catch (err) {
           if (err.message === "session_busy" && i < retries - 1) {
@@ -328,6 +343,24 @@ export default definePlugin({
       }
       return false;
     };
+
+    // Invisible per-turn context for the proposal notification: the agent that
+    // relays the visible message gets the structured proposal up front, so it
+    // can answer "查看提案 <ID>" in the same turn without a tool round-trip.
+    // Conservative field pick — never the raw pattern text.
+    const proposalContext = (proposal) => ({
+      beforeUser: [{
+        label: "self_learning_proposal",
+        text: JSON.stringify({
+          id: proposal.id,
+          type: proposal.type || null,
+          risk: proposal.risk || null,
+          title: proposal.title || null,
+          reason: proposal.reason || null,
+          triggerPatternIds: (proposal.triggerPatternIds || []).slice(0, 8),
+        }).slice(0, 2000),
+      }],
+    });
 
     const formatProposalNotification = (proposal) => [
       "Runtime Self-Learning 发现一个可改进点，需要你决定是否应用：",
@@ -354,7 +387,7 @@ export default definePlugin({
         if (!proposal?.id) continue;
         const lastNotified = runtimeState.proposalNotifiedIds.get(proposal.id) || 0;
         if (now - lastNotified < cooldownMs) continue;
-        const sent = await sendSessionMessage(sessionPath, formatProposalNotification(proposal));
+        const sent = await sendSessionMessage(sessionPath, formatProposalNotification(proposal), 3, proposalContext(proposal));
         if (sent) {
           runtimeState.proposalNotifiedIds.set(proposal.id, now);
         } else {
@@ -370,10 +403,11 @@ export default definePlugin({
       for (const pattern of patterns) {
         if (!["error", "usage"].includes(pattern.type)) continue;
         if ((pattern.count || 0) < CODE_PROPOSAL_MIN_COUNT) continue;
-        // Skip patterns that are inherently non-code issues:
-        // - usage:failed_request → always a network/provider problem
-        // - manually approved patterns → already acknowledged by user, don't re-propose
-        if (pattern.id && pattern.id.startsWith("usage:failed_request")) continue;
+        // Skip patterns that are inherently non-actionable as code patches:
+        // usage patterns are behavioral advisories, while error:unknown lacks
+        // enough evidence to name a code target.
+        if (!isActionableCodePatchPattern(pattern)) continue;
+        // Manually approved patterns are already acknowledged by the user.
         if (pattern.status === "approved" && !pattern.autoApproved) continue;
         const proposal = buildCodePatchProposal({ learnerDir: DATA_DIR, pattern });
         if (proposal.status === "pending") {
@@ -485,6 +519,9 @@ export default definePlugin({
           usage: readJson(USAGE_SUMMARY_FILE, null),
           capabilities: readJson(CAPABILITIES_FILE, null),
           reason,
+          // Lets the advisor use the host's `model:sample-text` capability
+          // (Hanako ≥ 0.305) instead of scraping provider credentials.
+          ctx,
         });
         if (result.ok) {
           refreshSkill(true, sessionPath);
@@ -523,7 +560,10 @@ export default definePlugin({
             // Low/medium risk suggestions are already handled by the merge loop above
             // (injected into pattern.fix => flows into next SKILL.md regeneration).
             // High-risk items need human review, so they become code_patch proposals.
-            const highRiskSuggestions = result.advice.suggestions.filter((s) => s.risk === "high" && detector.patterns.has(s.patternId));
+            const highRiskSuggestions = result.advice.suggestions.filter((s) => {
+              if (s.risk !== "high" || !detector.patterns.has(s.patternId)) return false;
+              return isActionableCodePatchPattern(detector.patterns.get(s.patternId));
+            });
             if (highRiskSuggestions.length > 0) {
               const toNotify = [];
               let created = 0;

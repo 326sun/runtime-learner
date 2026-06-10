@@ -7,7 +7,7 @@ import { buildCodePatchProposal, buildSkillPatchProposal, applyProposal, rejectP
 import { previewProposalDiff } from "../lib/proposals.js";
 import { validateProposal } from "../lib/validation-gate.js";
 import { listReviews, reviewIdForProposal, updateReviewStatus, reviewPanel } from "../lib/review-queue.js";
-import { readEvents, replayEventState } from "../lib/event-log.js";
+import { readEvents, replayEventState, appendEvent } from "../lib/event-log.js";
 import { loadSkillRegistry } from "../lib/skill-lifecycle.js";
 import { DEFAULT_CONFIG, writeJson } from "../lib/common.js";
 import { execute as executeControl } from "../tools/control.js";
@@ -101,6 +101,15 @@ describe("review governance", () => {
     assert.equal(replay.byType["proposal.applied"] >= 1, true);
     assert.equal(replay.entities[`proposal:${proposal.id}`].status, "applied");
     assert.equal(replay.entities[`review:${reviewIdForProposal(proposal)}`].status, "applied");
+  });
+
+  it("event replay keeps append order for same-millisecond events", () => {
+    const date = new Date().toISOString();
+    appendEvent(tmpDir, { type: "proposal.created", entityType: "proposal", entityId: "p_same_ms", date });
+    appendEvent(tmpDir, { type: "proposal.applied", entityType: "proposal", entityId: "p_same_ms", date });
+
+    const replay = replayEventState(readEvents(tmpDir, { limit: 10 }));
+    assert.equal(replay.entities["proposal:p_same_ms"].status, "applied");
   });
 
   it("reviewPanel summarizes queued and blocked items", () => {

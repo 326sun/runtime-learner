@@ -153,6 +153,50 @@ describe("runtime E2E with fake Hanako EventBus", () => {
     );
   });
 
+  it("does not create code_patch proposals from unknown error buckets", async () => {
+    const { bus, plugin } = await startRuntime();
+    const sessionPath = path.join(tempRoot, "sessions", "unknown-error-project", "turn.jsonl");
+
+    for (let i = 0; i < 3; i++) {
+      emitErrorTurn(bus, sessionPath, {
+        toolName: "bash",
+        error: "opaque failure without classifier keywords",
+      });
+    }
+
+    await plugin.onunload();
+
+    const unknownPattern = readPatterns().find((pattern) => pattern.type === "error" && pattern.id === "error:unknown");
+    assert.ok(unknownPattern, "unknown error pattern should still be tracked for diagnostics");
+    assert.equal(unknownPattern.count, 3);
+    assert.equal(listProposals(dataDir, { status: "pending" }).some((item) => item.type === "code_patch"), false);
+  });
+
+  it("does not create code_patch proposals from large-context usage patterns", async () => {
+    const { bus, plugin } = await startRuntime({ config: { ...DEFAULT_CONFIG, largeUsageTokenThreshold: 100 } });
+    const sessionPath = path.join(tempRoot, "sessions", "large-context-project", "turn.jsonl");
+
+    for (let i = 0; i < 3; i++) {
+      bus.emit({
+        type: "llm_usage",
+        entry: {
+          requestId: `large-context-${i}`,
+          status: "success",
+          model: { provider: "pixel api", modelId: "gpt-5.5" },
+          source: { subsystem: "chat", operation: "completion" },
+          usage: { totalTokens: 500 },
+          endedAt: new Date().toISOString(),
+        },
+      }, sessionPath);
+    }
+
+    await plugin.onunload();
+
+    const largeContextPattern = readPatterns().find((pattern) => pattern.id === "usage:large_context:pixel_api_gpt-5.5");
+    assert.ok(largeContextPattern, "large-context usage pattern should still be tracked as an advisory");
+    assert.equal(listProposals(dataDir, { status: "pending" }).some((item) => item.type === "code_patch"), false);
+  });
+
   it("keeps conservative skill proposals review-first and records the audit trail", async () => {
     const conservative = applyPolicyProfile(DEFAULT_CONFIG, "conservative").config;
     const { plugin } = await startRuntime({ config: conservative });

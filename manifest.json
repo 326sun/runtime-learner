@@ -2,11 +2,11 @@
   "manifestVersion": 1,
   "id": "hanako-runtime-learner",
   "name": "Runtime Self-Learning",
-  "version": "1.7.1",
+  "version": "1.8.0",
   "description": "运行时自我学习引擎：观察本地交互习惯，归纳重复工作流和错误，并注入保守的经验提示。",
   "author": "Sun",
   "trust": "full-access",
-  "minAppVersion": "0.0.0",
+  "minAppVersion": "0.293.0",
   "permissions": [
     "usage.read"
   ],
@@ -20,9 +20,7 @@
     "onToolCall:self_learning_search",
     "onToolCall:self_learning_doctor"
   ],
-  "capabilities": {
-    "chat": true
-  },
+  "capabilities": ["model.sample"],
   "contributes": {
     "configuration": {
       "properties": {
@@ -88,7 +86,7 @@
         },
         "modelAdvisorEnabled": {
           "type": "boolean",
-          "title": "启用小模型后台整理（会把归纳后的工作流/错误模式发送到你配置的小模型端点）",
+          "title": "启用小模型后台整理（Hanako ≥ 0.305 优先走官方模型采样接口，凭证不经过插件；旧版本回退到你配置的端点）",
           "default": false
         },
         "modelAdvisorSource": {

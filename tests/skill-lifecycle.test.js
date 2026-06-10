@@ -34,6 +34,21 @@ describe("skill lifecycle", () => {
     assert.equal(fs.readFileSync(skillPath, "utf-8"), "# Runtime Self-Learning\nfour\n");
   });
 
+  it("keeps distinct snapshots when writes land in the same millisecond", (t) => {
+    t.mock.timers.enable({ apis: ["Date"], now: 1765324800000 });
+    const skillPath = path.join(tmpDir, "plugin", "skills", "self-learning", "SKILL.md");
+    const historyDir = path.join(tmpDir, "skill_history");
+
+    writeSkillIfChanged(skillPath, "# Runtime Self-Learning\none\n", historyDir, { keep: 10 });
+    writeSkillIfChanged(skillPath, "# Runtime Self-Learning\ntwo\n", historyDir, { keep: 10 });
+    writeSkillIfChanged(skillPath, "# Runtime Self-Learning\nthree\n", historyDir, { keep: 10 });
+
+    const snapshots = fs.readdirSync(historyDir).filter((name) => name.endsWith("-SKILL.md")).sort();
+    assert.equal(snapshots.length, 2);
+    assert.equal(fs.readFileSync(path.join(historyDir, snapshots[0]), "utf-8"), "# Runtime Self-Learning\none\n");
+    assert.equal(fs.readFileSync(path.join(historyDir, snapshots[1]), "utf-8"), "# Runtime Self-Learning\ntwo\n");
+  });
+
   it("caps adjacent SKILL.md backup files", () => {
     const skillDir = path.join(tmpDir, "plugin", "skills", "self-learning");
     fs.mkdirSync(skillDir, { recursive: true });

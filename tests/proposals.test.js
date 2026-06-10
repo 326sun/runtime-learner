@@ -7,6 +7,7 @@ import {
   applyProposal,
   buildCodePatchProposal,
   buildSkillPatchProposal,
+  isActionableCodePatchPattern,
   listProposals,
   verifyProposal,
 } from "../lib/proposals.js";
@@ -63,6 +64,13 @@ describe("proposal engine", () => {
     assert.equal(proposal.risk, "high");
     assert.equal(proposal.autoApply, false);
     assert.throws(() => applyProposal(tmpDir, proposal.id), /cannot be auto-applied/);
+  });
+
+  it("only treats specific error patterns as actionable code patches", () => {
+    assert.equal(isActionableCodePatchPattern({ id: "error:unknown", type: "error", count: 3 }), false);
+    assert.equal(isActionableCodePatchPattern({ id: "error:file_not_found", type: "error", count: 3 }), true);
+    assert.equal(isActionableCodePatchPattern({ id: "usage:failed_request:openai_chat", type: "usage", count: 3 }), false);
+    assert.equal(isActionableCodePatchPattern({ id: "usage:large_context:pixel_api_gpt-5.5", type: "usage", count: 3 }), false);
   });
 
   it("caps resolved proposals but always keeps pending ones", () => {

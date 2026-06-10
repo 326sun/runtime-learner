@@ -326,6 +326,9 @@ const tool = defineTool({
         usage,
         capabilities,
         reason: "manual",
+        // Prefer the host's model:sample-text capability when this tool runs
+        // inside a Hanako ≥ 0.305 runtime; older hosts fall back to HTTP.
+        ctx,
       });
       if (result.ok) {
         // Merge distilled advice back into patterns before regenerating, so the
@@ -430,11 +433,15 @@ const tool = defineTool({
         hasGetCapability: typeof ctx?.bus?.getCapability === "function",
         hasHasHandler: typeof ctx?.bus?.hasHandler === "function",
         sessionSendCap: null,
+        sampleTextCap: null,
         sessionSendTest: null,
       };
       try {
         diag.sessionSendCap = ctx?.bus?.getCapability?.("session:send") || null;
       } catch (e) { diag.sessionSendCap = { error: e.message }; }
+      try {
+        diag.sampleTextCap = ctx?.bus?.getCapability?.("model:sample-text") || null;
+      } catch (e) { diag.sampleTextCap = { error: e.message }; }
       try {
         if (input.sessionPath) {
           const result = await ctx.bus.request("session:send", {

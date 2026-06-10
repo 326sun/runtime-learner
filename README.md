@@ -93,7 +93,7 @@ flowchart LR
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `modelAdvisorEnabled` | `false` | 开启后外发归纳后的 workflow / error / usage 模式 |
+| `modelAdvisorEnabled` | `false` | 开启后整理 workflow / error / usage 模式。Hanako ≥ 0.305 优先走宿主 utility 模型采样，provider 凭证不经过插件；旧版本或 bus 不可用时回退到配置端点 |
 | `modelAdvisorSource` | `official` | `official` / `private` / `off` |
 | `modelAdvisorMinIntervalMinutes` | `60` | 最小调用间隔 |
 | `modelAdvisorMaxTokens` | `500` | 单次最大输出 |
