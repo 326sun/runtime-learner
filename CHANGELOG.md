@@ -4,9 +4,11 @@
 
 - **API Freeze finalized**: `docs/API_FREEZE.md` updated to v4.3.0; added Self-Learning Control API to frozen contracts; added v4.0–v4.3 version history table and updated LTS rules (10 rules including v4.1 security additions).
 - **Architecture document rewritten**: `ARCHITECTURE.md` updated from v2.7-era state to current v4.3.0 (81 modules in 6 subsystem groups, key design decisions, no more references to deleted files).
+- **README rewritten for clarity**: restructured into a layered document — value proposition plus an automatic/governed/never boundary table for the learn → evolve → execute loop for end users; architecture, tool API, and frozen-docs reference for developers. Per-version hardening notes that had accumulated in the README were moved into this changelog. All release-readiness badge / clone-branch / test-count strings preserved.
+- **CI fixture fix**: `tests/release-readiness.test.js` `makeProject` now also generates `README.md` and `manifest.json`, so the "coherent project" fixture satisfies the README-badge and manifest-version checks shipped in this release; the CI matrix (Node 22/24) was failing on the two stale `ready`/`blocked` assertions.
 - **Code quality (carried)**: 81 lib modules, 496 tests, 17 benchmark scenarios, 40+ control actions.
 - **Tests**: 496 passing; benchmark corpus 17/17; release readiness score 100.
-- **Safety boundary preserved**: documentation-only release; no code, automation, or security boundary changes.
+- **Safety boundary preserved**: no runtime, automation, or security-boundary changes; the only non-documentation change is a test-fixture fix.
 - **v4.x LTS commitment**: v4.3.0 marks roadmap completion. Future v4.x releases are maintenance-only.
 
 ## 4.2.0 LTS

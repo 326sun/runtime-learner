@@ -10,10 +10,22 @@ function write(filePath, content) {
   fs.writeFileSync(filePath, content, "utf-8");
 }
 
-function makeProject({ version = "4.0.18-lts", lockVersion = version, scenarios = 16, omitAcceptance = false } = {}) {
+function makeProject({ version = "4.0.18-lts", lockVersion = version, scenarios = 16, omitAcceptance = false, testCount = 496 } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "hanako-release-readiness-"));
+  const baseVersion = version.replace(/-lts$/, "");
   write(path.join(root, "package.json"), JSON.stringify({ name: "hanako-runtime-learner", version }, null, 2));
   write(path.join(root, "package-lock.json"), JSON.stringify({ name: "hanako-runtime-learner", version: lockVersion, lockfileVersion: 3, packages: { "": { name: "hanako-runtime-learner", version: lockVersion } } }, null, 2));
+  write(path.join(root, "manifest.json"), JSON.stringify({ name: "hanako-runtime-learner", version }, null, 2));
+  write(
+    path.join(root, "README.md"),
+    [
+      `<img src="https://img.shields.io/badge/version-${baseVersion}--lts-blue" alt="version">`,
+      `<img src="https://img.shields.io/badge/tests-${testCount}%2F${testCount}-success" alt="tests">`,
+      `git clone --branch v${version} https://github.com/example/hanako-runtime-learner.git`,
+      `npm test           # ${testCount} 项测试`,
+      "",
+    ].join("\n"),
+  );
   write(path.join(root, "CHANGELOG.md"), `# Changelog\n\n## ${version.replace(/-lts$/i, " LTS")}\n\n- Release readiness.\n`);
   for (const rel of REQUIRED_LTS_DOCS) write(path.join(root, rel), rel.endsWith("API_FREEZE.md") ? "# API Freeze\n\nv4.0 frozen API surface.\n" : `# ${rel}\n\n${version}\n`);
   write(path.join(root, "docs", "DESIGN_GOAL_COMPLETION_MATRIX.md"), `# Design Goal Completion Matrix\n\nStatus: ${version}.\n`);

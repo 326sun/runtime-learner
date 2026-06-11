@@ -13,10 +13,50 @@
   <img src="https://img.shields.io/badge/tests-496%2F496-success" alt="tests">
 </p>
 
-观察你的交互，从中提取可复用的经验，自动注入到 Hanako Agent 的后续会话中。重复的工作流、反复触发的错误、明确的纠正——全部本地处理，默认不外发任何数据。
+> 观察你和 Hanako 的真实交互，把重复的工作流、反复踩的错、你给过的纠正学成可复用的经验，并在确有把握时自动写回 Agent 的后续会话——全部在本地完成，默认不外发任何数据。
+
+## 它解决什么
+
+每开一个新会话，Agent 都像第一次见你：同样的工作流要重新解释，同一个错误一犯再犯，你纠正过的偏好转头就忘。
+
+`Runtime Self-Learning` 在后台默默观察，把这些沉淀成带证据、带评分的经验，并在置信度足够时自动注入到 Agent 之后的回答里，让它**越用越懂你的项目和习惯**——而且默认不把任何数据发到本机之外。
+
+## 三件事，以及它的边界
+
+这个插件做三件事：**学习**你的交互、把学到的东西**进化**进 Agent 的行为、在安全边界内**自动执行**一部分补救动作。下面是诚实的范围说明。
+
+### ① 学习 —— 它学什么
+
+| 类型 | 触发条件 |
+|---|---|
+| **工作流** | 同类工具序列重复 ≥ 3 次 |
+| **偏好** | 你给出的纠正原文 |
+| **错误** | 反复出现的报错，附「不要这样重试」的修复建议 |
+| **用量** | 大上下文、失败的模型请求 |
+
+每条经验都带证据链和艾宾浩斯衰减评分（`score × e^(-λt)`，高频持久、低频自然淘汰），持久化在本地 `patterns.json`。
+
+### ② 进化 —— 学到的东西怎么影响以后
+
+- **自动（默认开）**：高置信度经验会自动写进插件自己的 `SKILL.md`，从而进入 Agent 后续会话的上下文。这是真正影响行为的主路径。
+- **证据门控（默认需你点头）**：经过成功验证、零回归的经验可晋升为「已激活技能」，但默认 **不** 回注（`activeSkillsInjectionEnabled = false`），需要你显式开启。
+
+### ③ 自动执行 —— 会做什么，绝不做什么
+
+执行闭环（`触发 → 计划 → 策略门 → 执行 → 验证 → 回滚/反馈`）默认开启，但它执行的是一张**固定的安全清单**，不会拿任意学到的工作流去自由执行：
+
+| | 范围 |
+|---|---|
+| ✅ **自动执行**（低/中风险） | 错误诊断、一次 backoff 重试、只读定位文件、压缩/拆分超大上下文、跑 test/lint、应用经过 diff 预览的小补丁（R2 封顶） |
+| ⏸ **进审批队列**（高风险） | R3/R4 动作只生成 `action_plan`，等你确认，不自动执行 |
+| ⛔ **永不自动执行** | 删除文件、`git push`、`git tag`、`npm publish`、发布、外部写请求、密钥/凭证修改 |
+
+每个写动作都有事务保护：**验证不通过自动回滚**；命令默认只允许 `node --check`，其余必须在 allowlist 内；补丁先过 scope gate + diff 预览。设计原则是 fail-closed、不自动升级权限。
+
+## 安装
 
 ```powershell
-# 当前最新版
+# 最新版
 git clone https://github.com/326sun/Hanako-runtime-learner.git
 cd Hanako-runtime-learner
 npm run install-plugin
@@ -27,88 +67,36 @@ cd Hanako-runtime-learner
 npm run install-plugin
 ```
 
-升级：`git pull && npm run install-plugin`
+升级：`git pull && npm run install-plugin`。**升级时别删 `~/.hanako/self-learning`**，否则学习记录会被清空。完整说明见 [INSTALL.md](INSTALL.md)。
 
-## Runtime Auto Action v2.0
+## 数据与隐私
 
-`Runtime Self-Learning` 现在具备低/中风险自动执行闭环：
+- **纯本地**，数据在 `~/.hanako/self-learning/`；在对话里说「打开学习目录」可随时查看或手动删除。
+- **默认不外发**。只有显式开启「模型顾问」或「语义检索」才会向你配置的端点发送数据；用户纠正原文、`pin_memory` 内容**永不外发**。
+- 证据链中的密钥、邮箱、令牌等敏感片段自动脱敏，仅保留原文哈希用于去重。
 
-```text
-Observe → Trigger → Plan → Policy Gate → Execute → Verify → Feedback → Learn
-```
+## 常用配置
 
-核心边界：
+完整配置开箱即用，外部网络功能默认全部关闭。最常调整的几项：
 
-- 低风险动作可自动执行，例如错误诊断、一次性 backoff retry、只读文件定位、测试/检查命令。
-- 中风险动作必须经过 Policy Gate，并具备 verification 与 rollback plan；写入类动作通过 transaction 保护。
-- 高风险动作只生成 `action_plan` 并进入 Review Queue，不自动执行。
-- 删除文件、`git push`、`git tag`、`npm publish`、发布、外部写请求、密钥/凭证修改等动作永不自动执行。
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `governanceProfile` | `balanced` | 策略档：`conservative` / `balanced` / `autonomous` |
+| `autoInjectHighConfidence` | `true` | 高置信经验自动写入 `SKILL.md` |
+| `decayHalfLifeDays` | `30` | 经验评分半衰期（天） |
+| `activeSkillsInjectionEnabled` | `false` | 是否允许「已激活技能」回注 `SKILL.md` |
+| `modelAdvisorEnabled` | `false` | 后台小模型整理（关闭即零外发） |
+| `semanticSearchEnabled` | `false` | 语义检索（关闭即零外发） |
 
-新增运行时模块位于 `lib/`：
+完整配置项与治理操作示例见 [docs/GOVERNANCE.md](docs/GOVERNANCE.md)。
 
-```text
-action-triggers       触发器
-action-planner        行动计划生成
-action-risk           R0-R4 风险分级
-action-types          动作类型定义
-action-executor       受限执行器
-action-transaction    可回滚写入事务
-action-patcher        精确文本补丁
-policy-profiles       策略配置档
-evaluation-runner     执行后验证与指标
-evaluation-metrics    验证指标定义
-```
+---
 
-生成的数据文件：
+> 以下面向想读源码或二次开发的开发者。
 
-```text
-action_feedback.jsonl        每次自动执行的 before/after/verification
-action_policy_weights.json   actionType 成功率与自动执行权重
-```
+## 架构
 
-
-### Runtime Auto Action v4.3.0 LTS：最终硬化补丁
-
-`v4.3.0` 将中风险写入动作从基础 transaction 推进到可验证的小补丁执行：
-
-- `apply_patch_sandboxed` 支持 `filePatches` 精确文本补丁，`oldText` 默认必须唯一匹配，避免误改多处。
-- 支持 `verifyCommands`，例如 `node --check file.js`、`npm test`、`npm run check`，命令仍受 allowlist/denylist 限制。
-- 验证失败时自动 rollback，恢复 transaction snapshot。
-- 支持一次受控 `repairPlan`，修复后重新验证；仍失败则回滚。
-- 新增验证指标：`patch_applied`、`verification_commands_pass`、`rollback_clean`。
-
-R2 自动写入仍必须满足：Policy Gate 通过、存在 rollback plan、存在 verification、命令在 allowlist 内、diff scope 不超限。
-
-### Runtime Auto Action v4.3.0 LTS：维护硬化
-
-`v4.3.0-lts` 保持最终 LTS 契约，同时补上发布前机器门禁：
-
-- Action / Policy / Transaction / Sandbox / Skill Promotion / Audit / Benchmarks API 文档齐备。
-- Benchmark corpus 覆盖 17 个系统级场景。
-- 插件 action 的 `execute.js` / `verify.js` / `rollback.js` 走子进程隔离。
-- Agent Controller 具备显式 repair / rollback 分支。
-- Skill Promotion 已形成 reflexion → candidate → active registry 闭环。
-- `active_skills.json` 默认不注入 `SKILL.md`；如需注入，必须显式开启 `activeSkillsInjectionEnabled`。
-- 新增 `npm run release:check` 与 `self_learning_control action=release_readiness`，用于检查 package/package-lock、CHANGELOG、ACCEPTANCE、API freeze、LTS 文档和 benchmark corpus 的发布一致性。
-- R4、外部副作用、发布、删除、密钥修改仍永不自动执行。
-
-冻结文档见：
-
-```text
-docs/ACTION_API.md
-docs/POLICY.md
-docs/TRANSACTION.md
-docs/SANDBOX.md
-docs/SKILL_PROMOTION.md
-docs/AUDIT.md
-docs/BENCHMARKS.md
-docs/MIGRATION_v3_to_v4.md
-docs/API_FREEZE.md
-```
-
-## 管道
-
-四层架构：事件捕获 → 模式检测 → 记忆管理与衰减 → 检索与治理。
+四层管道：**观察 → 学习 → 行动 → 治理**。
 
 ```mermaid
 flowchart LR
@@ -116,26 +104,25 @@ flowchart LR
     OBS --> ST[SessionTurn]
     ST --> PD[pattern-detector]
     PD --> PP[pipeline]
-    PP --> SK[SKILL.md]
+    PP --> SK[SKILL.md 注入]
+    PP --> ACT[action-executor]
+    ACT --> VG[验证 / 回滚]
     PD --> RET[检索索引]
-    RET --> SCH[self_learning_search]
     PD --> PRP[proposals]
     PRP --> RQ[review queue]
 ```
 
-核心设计决策：
+81 个 lib 模块、9 个工具、1 个入口。完整调用拓扑见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
-**零运行时依赖** — 纯 JS BM25 倒排索引，CJK 单字加二元组分词，无需 SQLite 或外部分词器。
+### 核心设计决策
 
-**艾宾浩斯遗忘曲线** — `score × e^(-λt)`，高频持久，低频自然淘汰。手动批准的模式永不衰减。
+- **零运行时依赖** — 纯 JS BM25 倒排索引，CJK 单字加二元组分词，无需 SQLite 或外部分词器。
+- **艾宾浩斯遗忘曲线** — 高频经验持久，低频自然淘汰；手动批准的经验永不衰减。
+- **作用域感知检索** — 按项目隔离记忆，跨项目硬拒绝，跨任务软降权。
+- **原子 I/O** — 所有 `writeJson` 走 tmp+rename，保证崩溃安全。
+- **fail-closed 安全** — scope gate、policy gate、command allowlist 默认全部拒绝。
 
-**作用域感知检索** — 按项目隔离记忆，跨项目硬拒绝，跨任务软降权。
-
-**原子 I/O** — `writeJson` 通过 `rename` 保证并发安全；mtime 缓存跳过无效磁盘重读。
-
-完整调用拓扑见 [`ARCHITECTURE.md`](ARCHITECTURE.md)。
-
-## API
+## 工具 API
 
 | 工具 | 用途 |
 |---|---|
@@ -144,121 +131,50 @@ flowchart LR
 | `self_learning_stats` | 统计总览：turns / patterns / proposals / 配置 |
 | `self_learning_report` | 结构化学习报告，含待处理提案 |
 | `self_learning_activity` | 近 N 天学习活动时间线 |
-| `self_learning_control` | 审批、proposal 管理、review queue、diff preview、策略切换、事件链验证、审计导出 |
+| `self_learning_control` | 审批、proposal 管理、review queue、diff preview、策略切换、事件链验证、审计导出、技能晋升 |
 | `self_learning_open_dir` | 打开数据目录 |
-
-## 配置
-
-完整配置开箱即用。外部网络功能（模型顾问、语义检索）默认关闭，需显式开启。
-
-### 注入与审批
-
-| 键 | 默认 | 说明 |
-|---|---|---|
-| `governanceProfile` | `balanced` | 策略档：`conservative` / `balanced` / `autonomous` |
-| `autoInjectHighConfidence` | `true` | 高置信 pattern 自动注入 SKILL.md |
-| `autoApproveHighConfidence` | `true` | 高置信 pattern 免审批 |
-| `minInjectScore` | `8` | 注入最低衰减分数 |
-| `minInjectCount` | `2` | 注入最少触发次数 |
-| `decayHalfLifeDays` | `30` | 艾宾浩斯半衰期，天 |
-| `includePendingPreferences` | `false` | 未审核偏好注入开关；默认关闭，未审核纠正仅可检索 |
-| `requireReviewForAutoApply` | `false` | 严格审核模式：auto-apply proposal 进入 Review Queue |
-| `activeSkillsInjectionEnabled` | `false` | 是否允许 `active_skills.json` 中的 active skill 进入渲染后的 `SKILL.md` |
-| `activeSkillsInjectionMaxCount` | `3` | active skill 最多注入条数 |
-| `activeSkillsInjectionMinSuccess` | `7` | active skill 注入所需最少成功证据 |
-| `activeSkillsInjectionMaxRegression` | `0` | active skill 注入允许的最大回归次数 |
-
-### 模型顾问
-
-关闭时零外发。
-
-| 键 | 默认 | 说明 |
-|---|---|---|
-| `modelAdvisorEnabled` | `false` | 开启后整理 workflow / error / usage 模式。Hanako ≥ 0.305 优先走宿主 utility 模型采样，provider 凭证不经过插件；旧版本或 bus 不可用时回退到配置端点 |
-| `modelAdvisorSource` | `official` | `official` / `private` / `off` |
-| `modelAdvisorMinIntervalMinutes` | `60` | 最小调用间隔 |
-| `modelAdvisorMaxTokens` | `500` | 单次最大输出 |
-
-### 语义检索
-
-关闭时零外发。
-
-| 键 | 默认 | 说明 |
-|---|---|---|
-| `semanticSearchEnabled` | `false` | 开启后外发查询词与候选文本到 embedding 端点 |
-| `semanticEmbeddingBaseUrl` | — | OpenAI 兼容 Base URL |
-| `semanticEmbeddingApiKey` | — | API Key |
-| `semanticEmbeddingModel` | — | 模型名称 |
-| `semanticCacheMaxEntries` | `1000` | 本地向量缓存上限 |
-
-高级调优键（仅 `DEFAULT_CONFIG`，不在设置 UI 暴露）：`maxSkillTokens`、`retrievalCandidateLimit`、`minRetrievalRelative`、`crossTaskPenalty`、`minRetrievalConfidence`、`semanticTopK`、`rrfK`、`durableMemoryMaxCount`。
 
 ## 检索
 
-BM25 倒排索引 → 准入 Gate → 关系 / 记忆强度重排 → 可选语义 RRF 融合。
+BM25 倒排索引 → 准入 Gate → 关系/记忆强度重排 → 可选语义 RRF 融合。
 
-**CJK 分词** — 单字加相邻二元组，`排版` 可命中 `论文排版`，无需外部分词器。
-
-**跨语言同义词** — `coding` ↔ `代码`，`workflow` ↔ `工作流`。
-
-**作用域隔离** — 跨项目记忆硬拒绝（`general` 为通配 sentinel），跨任务软降权。
-
-**语义检索**默认关闭。开启后按内容哈希缓存向量到 `embeddings_cache.json`，端点失败自动退化为纯 BM25。
+- **CJK 分词** — 单字加相邻二元组，`排版` 可命中 `论文排版`，无需外部分词器。
+- **跨语言同义词** — `coding` ↔ `代码`，`workflow` ↔ `工作流`。
+- **作用域隔离** — 跨项目记忆硬拒绝（`general` 为通配 sentinel），跨任务软降权。
+- **语义检索** 默认关闭；开启后按内容哈希缓存向量，端点失败自动退化为纯 BM25。
 
 ## 治理
 
-学习结果进入可审计治理链：Proposal → Review Queue → Validation Gate → Event Log。Doctor 健康检查、策略配置档、MemFS 视图、审计包导出与操作示例见 [`docs/GOVERNANCE.md`](docs/GOVERNANCE.md)。
-
-## 数据与隐私
-
-纯本地，路径 `~/.hanako/self-learning/`。`self_learning_open_dir` 可随时打开查看或手动删除。
-
-**本地留存** — `experience_log.jsonl` 保留每轮意图与纠正原文，30 天窗口自动清理。`patterns.json` 中的 preference 原文按 `durableMemoryMaxCount` 上限保留。证据链中的敏感片段（密钥、邮箱、令牌）自动脱敏，仅保存原文哈希用于去重。
-
-**默认不外发**。仅当显式开启 `modelAdvisorEnabled` 或 `semanticSearchEnabled` 时才会外发数据。`preference` 与 `durable` 模式（用户纠正原文、`pin_memory` 内容）永不外发。
+学习结果进入可审计治理链：`Proposal → Review Queue → Validation Gate → Event Log`。Doctor 健康检查、策略配置档、MemFS 视图、审计包导出与操作示例见 [docs/GOVERNANCE.md](docs/GOVERNANCE.md)。
 
 ## 开发
 
 零外部 npm 依赖，Node ≥ 18。
 
 ```powershell
-npm run check      # 源文件语法检查
-npm test           # 496 项测试
-npm run benchmark  # 内置 benchmark corpus，输出 Markdown/JSON 报告
+npm run check          # 源文件语法检查
+npm test               # 496 项测试
+npm run benchmark      # 内置 17 场景 benchmark corpus，输出 Markdown/JSON 报告
 npm run release:check  # LTS 发布契约检查：版本、文档、验收报告、benchmark corpus
 ```
 
-项目结构与完整调用拓扑见 [`ARCHITECTURE.md`](ARCHITECTURE.md)。
+Benchmark runner 用 `benchmarks/baseline-v4.0.9.json` 与 `benchmarks/thresholds.json` 对比当前指标，回归会导致命令失败。发布门禁保守设计：只检查发布元数据和文档，永不执行 `git tag`、`git push`、`npm publish` 或任何外部副作用。
+
+## 冻结文档
+
+API 以 [docs/API_FREEZE.md](docs/API_FREEZE.md) 为准，主架构与自动化边界已冻结。
+
+| 文档 | 内容 |
+|---|---|
+| [ACTION_API.md](docs/ACTION_API.md) | 自动执行动作 API |
+| [POLICY.md](docs/POLICY.md) | 策略门与风险分级 |
+| [TRANSACTION.md](docs/TRANSACTION.md) | 可回滚写入事务 |
+| [SANDBOX.md](docs/SANDBOX.md) | 命令沙箱与边界 |
+| [SKILL_PROMOTION.md](docs/SKILL_PROMOTION.md) | 技能晋升闭环 |
+| [AUDIT.md](docs/AUDIT.md) | 审计与事件链 |
+| [BENCHMARKS.md](docs/BENCHMARKS.md) | benchmark corpus |
+| [MIGRATION_v3_to_v4.md](docs/MIGRATION_v3_to_v4.md) | v3 → v4 迁移 |
+
+完整变更历史见 [CHANGELOG.md](CHANGELOG.md)。
 
 [MIT](LICENSE) © Sun
-
-### v4.3.0 LTS benchmark corpus
-
-`v4.3.0-lts` 内置 benchmark 场景语料库，覆盖运行时诊断、大上下文任务分解、安全命令执行、验证失败后回滚、越界写入拦截。报告默认输出到 `benchmark-results/`：
-
-```powershell
-npm run benchmark
-```
-
-Benchmark runner 用 `benchmarks/baseline-v4.0.9.json` 和 `benchmarks/thresholds.json` 对比当前指标，回归会导致命令失败。
-
-### v4.3.0 LTS release readiness gate
-
-`v4.3.0-lts` 提供发布就绪门禁，服务于最终 LTS 分发路径。门禁保守设计：只检查发布元数据和文档，永不执行 `git tag`、`git push`、`npm publish` 或任何外部副作用。
-
-```bash
-npm run release:check
-node scripts/release-readiness.js --output-dir release-readiness
-```
-
-同一检查可通过 `self_learning_control` 的 `action=release_readiness` 触发，会在学习数据目录下写入 `release-readiness.md/json` 并记录本地审计事件。
-
-### v4.3.0 LTS 最终硬化
-
-`v4.3.0-lts` 是 v4.x 主路线完成版，在保持 v4.0 LTS 设计不变的前提下收尾以下工程边界：
-
-- `manifest.json`、`package.json`、`package-lock.json` 版本统一为 `4.3.0-lts`。
-- sandbox command allowlist 拒绝 shell 复合符、重定向、命令替换和变量展开。
-- filesystem boundary 改为 symlink-aware，防止 workspace 内 symlink 指向外部路径后被读写。
-- 命令 denylist 改为 token/segment-aware，不再因文件名中包含 `rm` 误伤安全命令，同时仍阻断 `rm -rf`、`git push`、`npm publish` 等高风险命令。
-- API freeze 以 `docs/API_FREEZE.md` 为准，主架构与自动化边界冻结。
